@@ -42,17 +42,19 @@ class DummyModel:
 def load_model():
     try:
         model = models.efficientnet_b3(pretrained=False)
-        num_ftrs = model.classifier[1].in_features
-        model.classifier[1] = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+        num_ftrs = model.classifier.in_features
+        model.classifier = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
 
         model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
 
         if os.path.exists(model_path):
             checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 
-            # Load only the model state dict
-            model.load_state_dict(checkpoint['model_state_dict'])
-            print("✅ Trained model loaded successfully.")
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print("✅ Trained model loaded successfully.")
+            else:
+                print("⚠️ Key 'model_state_dict' not found in checkpoint. Skipping weight loading.")
         else:
             print("❌ No trained model found. Using random classifier weights.")
 
