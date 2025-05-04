@@ -42,24 +42,28 @@ class DummyModel(nn.Module):
 
 def load_model():
     try:
-        model = models.efficientnet_b3(pretrained=False)
+        model = models.efficientnet_b3(weights=None)
 
-        # Modify classifier BEFORE loading state_dict — must match training architecture
-        num_ftrs = model.classifier.in_features
-        model.classifier = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+        # Access in_features from classifier[1] (Linear layer)
+        num_ftrs = model.classifier[1].in_features
+        model.classifier = torch.nn.Sequential(
+            torch.nn.Dropout(p=0.3),
+            torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+        )
 
-        model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
+        model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
+        if not os.path.exists(model_path):
+            print("❌ No trained model found. Using dummy model.")
+            return DummyModel()
 
-        if os.path.exists(model_path):
-            checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+        checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
 
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-                print("✅ Trained model loaded successfully.")
-            else:
-                print("⚠️ Key 'model_state_dict' not found in checkpoint.")
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print("✅ Trained model loaded successfully.")
         else:
-            print("❌ No trained model found. Using random classifier weights.")
+            print("⚠️ No 'model_state_dict' found. Using dummy model.")
+            return DummyModel()
 
         model.eval()
         return model
@@ -167,6 +171,8 @@ async def predict(file: UploadFile = File(...)):
         print(f"Error during prediction: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-# Run the FastAPI app with uvicorn
+# Run the FastAPI app with uvicorn (compatible with deployment platforms)
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8502)
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
