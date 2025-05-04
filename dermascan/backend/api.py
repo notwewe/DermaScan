@@ -17,6 +17,7 @@ DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
 # Initialize FastAPI
 app = FastAPI()
 
+# Allow CORS for Vercel frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://derma-scan-kappa.vercel.app"],
@@ -28,7 +29,6 @@ app.add_middleware(
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
-
 
 # Custom model class used in training
 class ImprovedSkinLesionModel(nn.Module):
@@ -63,14 +63,12 @@ class ImprovedSkinLesionModel(nn.Module):
         features = self.efficientnet(x)
         return self.classifier(features)
 
-
 # Fallback dummy model
 class DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
     def forward(self, x):
         return torch.zeros((1, len(DEFAULT_CLASSES)))
-
 
 # Load trained model
 def load_model():
@@ -95,19 +93,17 @@ def load_model():
         print(f"❌ Failed to load model: {e}")
         return DummyModel(), DEFAULT_CLASSES
 
-
 # Image preprocessing
 def preprocess_image(image):
     transform = transforms.Compose([
-        transforms.Resize((300, 300)),
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406],
                              [0.229, 0.224, 0.225])
     ])
     return transform(image).unsqueeze(0)
 
-
-# Image quality analysis helpers
+# Image quality analysis
 def analyze_image_quality(image):
     width, height = image.size
     if width < 100 or height < 100:
@@ -138,7 +134,6 @@ def analyze_color_variation(image):
     elif avg_std < 40:
         return "Moderate"
     return "Significant"
-
 
 # Prediction endpoint
 @app.post("/api/predict")
@@ -178,8 +173,7 @@ async def predict(file: UploadFile = File(...)):
         print(f"❌ Prediction error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-# Run app with Uvicorn
+# Run with Uvicorn locally (optional)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     import uvicorn
