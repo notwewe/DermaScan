@@ -30,38 +30,6 @@ app.add_middleware(
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-# Custom model class used in training
-class ImprovedSkinLesionModel(nn.Module):
-    def __init__(self, num_classes=7, dropout_rate=0.5):
-        super(ImprovedSkinLesionModel, self).__init__()
-        self.efficientnet = models.efficientnet_b3(weights='DEFAULT')
-        in_features = self.efficientnet.classifier[1].in_features
-        self.efficientnet.classifier = nn.Identity()
-
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout_rate),
-            nn.Linear(in_features, 512),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate / 2),
-            nn.Linear(128, num_classes)
-        )
-
-        self._freeze_layers()
-
-    def _freeze_layers(self):
-        for param in self.efficientnet.parameters():
-            param.requires_grad = False
-        for param in self.efficientnet.features[-1].parameters():
-            param.requires_grad = True
-        for param in self.classifier.parameters():
-            param.requires_grad = True
-
-    def forward(self, x):
-        features = self.efficientnet(x)
-        return self.classifier(features)
 
 # Fallback dummy model
 class DummyModel(nn.Module):
@@ -82,7 +50,8 @@ def load_model():
         class_names = checkpoint.get('class_names', DEFAULT_CLASSES)
         num_classes = len(class_names)
 
-        model = ImprovedSkinLesionModel(num_classes=num_classes)
+        model = models.resnet18(pretrained=False)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 
