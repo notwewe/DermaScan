@@ -42,23 +42,31 @@ class DummyModel(nn.Module):
 
 def load_model():
     try:
-        model = models.efficientnet_b3(weights=None)  # Don't load pretrained
-        num_features = model.classifier[1].in_features
+        model = models.efficientnet_b3(pretrained=False)
 
-        # This should match your training config
-        model.classifier[1] = nn.Linear(num_features, 512)  # this matches your trained model
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+        # Modify classifier BEFORE loading state_dict — must match training architecture
+        num_ftrs = model.classifier.in_features
+        model.classifier = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
 
-        # Update classifier to match actual number of HAM10000 classes
-        model.classifier[1] = nn.Linear(512, 7)  # final layer for 7 skin classes
+        model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
 
-        return model.eval()
+        if os.path.exists(model_path):
+            checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print("✅ Trained model loaded successfully.")
+            else:
+                print("⚠️ Key 'model_state_dict' not found in checkpoint.")
+        else:
+            print("❌ No trained model found. Using random classifier weights.")
+
+        model.eval()
+        return model
+
     except Exception as e:
         print(f"❌ Error loading model: {e}")
-        print("⚠️ Using dummy model.")
         return DummyModel()
-
-model = load_model()
 
 # Preprocess image
 def preprocess_image(image):
