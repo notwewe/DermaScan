@@ -11,68 +11,61 @@ from starlette.responses import JSONResponse
 from io import BytesIO
 import torch.nn as nn
 
-# Class names
-CLASS_NAMES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
-
 # Create FastAPI app
 app = FastAPI()
 
-# Add CORS middleware to allow requests from the frontend
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app"],  # Only allow your frontend domain
+    allow_origins=["https://derma-scan-kappa.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Root endpoint for API health check
+# Health check
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-MODEL_PATH = "skin_lesion_model.pth"  # adjust if the path is different
+MODEL_PATH = "skin_lesion_model.pth"
 
 class DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
-
     def forward(self, x):
-        return torch.zeros((1, 7))  # match expected output
+        return torch.zeros((1, 7))  # default fallback
 
+# Load model
 def load_model():
     try:
-        model = models.efficientnet_b3(weights=None)
+        model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
+        if not os.path.exists(model_path):
+            print("❌ Model not found. Using dummy.")
+            return DummyModel(), ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
 
-        # Access in_features from classifier[1] (Linear layer)
+        checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+        class_names = checkpoint.get('class_names', ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc'])
+        num_classes = len(class_names)
+
+        model = models.efficientnet_b3(weights=None)
         num_ftrs = model.classifier[1].in_features
         model.classifier = torch.nn.Sequential(
             torch.nn.Dropout(p=0.3),
-            torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+            torch.nn.Linear(num_ftrs, num_classes)
         )
 
-        model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
-        if not os.path.exists(model_path):
-            print("❌ No trained model found. Using dummy model.")
-            return DummyModel()
-
-        checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            print("✅ Trained model loaded successfully.")
-        else:
-            print("⚠️ No 'model_state_dict' found. Using dummy model.")
-            return DummyModel()
-
+        model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
-        return model
+
+        print(f"✅ Loaded trained model with {num_classes} classes: {class_names}")
+        return model, class_names
 
     except Exception as e:
         print(f"❌ Error loading model: {e}")
-        return DummyModel()
+        return DummyModel(), ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
 
-# Preprocess image
+# Image preprocessing
 def preprocess_image(image):
     transform = transforms.Compose([
         transforms.Resize((300, 300)),
@@ -81,16 +74,13 @@ def preprocess_image(image):
     ])
     return transform(image).unsqueeze(0)
 
-# Analyze image quality
+# Quality analysis helpers
 def analyze_image_quality(image):
     width, height = image.size
-
     if width < 100 or height < 100:
         return "Poor - Image is too small"
-
     img_array = np.array(image.convert('L'))
     variance = np.var(img_array)
-
     if variance < 100:
         return "Poor - Image may be blurry"
     elif variance < 500:
@@ -98,11 +88,9 @@ def analyze_image_quality(image):
     else:
         return "Good"
 
-# Analyze lesion border
 def analyze_lesion_border(image):
     img_array = np.array(image)
     edge_strength = np.std(img_array)
-
     if edge_strength < 30:
         return "Poorly-defined"
     elif edge_strength < 60:
@@ -110,17 +98,13 @@ def analyze_lesion_border(image):
     else:
         return "Well-defined"
 
-# Analyze color variation
 def analyze_color_variation(image):
     img_rgb = image.convert('RGB')
     img_array = np.array(img_rgb)
-
     r_std = np.std(img_array[:, :, 0])
     g_std = np.std(img_array[:, :, 1])
     b_std = np.std(img_array[:, :, 2])
-
     avg_std = (r_std + g_std + b_std) / 3
-
     if avg_std < 20:
         return "Minimal"
     elif avg_std < 40:
@@ -128,7 +112,7 @@ def analyze_color_variation(image):
     else:
         return "Significant"
 
-# FastAPI endpoint for prediction
+# Prediction endpoint
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
     try:
@@ -138,17 +122,16 @@ async def predict(file: UploadFile = File(...)):
         except UnidentifiedImageError:
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.")
 
-        model = load_model()
+        model, class_names = load_model()
         processed_image = preprocess_image(image)
 
         with torch.no_grad():
             outputs = model(processed_image)
             probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
 
-        confidences = {CLASS_NAMES[i]: float(probabilities[i]) for i in range(len(CLASS_NAMES))}
-        prediction = CLASS_NAMES[torch.argmax(probabilities).item()]
+        confidences = {class_names[i]: float(probabilities[i]) for i in range(len(class_names))}
+        prediction = class_names[torch.argmax(probabilities).item()]
 
-        # Generate analysis details
         image_quality = analyze_image_quality(image)
         border_quality = analyze_lesion_border(image)
         color_variation = analyze_color_variation(image)
@@ -168,10 +151,10 @@ async def predict(file: UploadFile = File(...)):
     except HTTPException as http_err:
         raise http_err
     except Exception as e:
-        print(f"Error during prediction: {e}")
+        print(f"❌ Error during prediction: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-# Run the FastAPI app with uvicorn (compatible with deployment platforms)
+# Run the app
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
