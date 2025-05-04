@@ -1,0 +1,7 @@
+2025-05-05 04:35:03,944 - api - INFO - Preloading model at startup
+2025-05-05 04:35:03,944 - api - INFO - Memory usage: 302.90 MB
+2025-05-05 04:35:03,944 - api - INFO - Starting model loading
+2025-05-05 04:35:03,944 - api - INFO - Loading model from C:\Users\Francis Wedemeyer\v0-untitled-project-1\dermascan\backend\skin_lesion_model.pth
+2025-05-05 04:35:04,008 - api - INFO - Found class names in checkpoint: ['Actinic Keratosis', 'Basal Cell Carcinoma', 'Benign Keratosis', 'Dermatofibroma', 'Melanoma', 'Melanocytic Nevus', 'Vascular Lesion']
+2025-05-05 04:35:04,332 - api - INFO - Model preloaded successfully
+2025-05-05 04:35:04,332 - api - INFO - Memory usage: 398.29 MB

@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Upload, Camera, Loader2, AlertTriangle, Info, Trash2, Share2 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
 
 // Type definitions
 type LesionType = "akiec" | "bcc" | "bkl" | "df" | "mel" | "nv" | "vasc"
@@ -33,6 +34,7 @@ type ResultType = {
   prediction: LesionType
   confidences: Record<LesionType, number>
   details: string[]
+  max_confidence?: number
 }
 
 // Define the lesion types and their descriptions
@@ -84,13 +86,13 @@ const lesionTypes: LesionTypes = {
 
 // Sample images for each lesion type
 const sampleImages: SampleImages = {
-  akiec: "/placeholder.svg?height=300&width=300",
-  bcc: "/placeholder.svg?height=300&width=300",
-  bkl: "/placeholder.svg?height=300&width=300",
-  df: "/placeholder.svg?height=300&width=300",
-  mel: "/placeholder.svg?height=300&width=300",
-  nv: "/placeholder.svg?height=300&width=300",
-  vasc: "/placeholder.svg?height=300&width=300",
+  akiec: "https://www.richmonddermatology.com/wp-content/uploads/2018/06/SkinCancers_ActinicKeratosis-1.jpg", // Actinic Keratosis (AKIEC)
+  bcc: "https://upload.wikimedia.org/wikipedia/commons/1/1a/Superficial_basal_cell_carcinoma.jpg",           // Basal Cell Carcinoma (BCC)
+  bkl: "https://www.rodeoderm.com/wp-content/uploads/Seborrheic-Keratosis.jpg",                               // Benign Keratosis (BKL)
+  df: "https://apollodermclinic.com/wp-content/uploads/2023/09/Dermatofibroma-Skin-Condition-Apollo-Dermatology-Troy-MI.png", // Dermatofibroma (DF)
+  mel: "https://www.saintjohnscancer.org/melanoma/wp-content/uploads/sites/4/2022/07/detecting-skin-cancer.jpg",              // Melanoma (MEL)
+  nv: "https://www.myskindoctor.co.uk/wp-content/uploads/AdobeStock_266671269.jpg",                                            // Melanocytic Nevus (NV)
+  vasc: "https://drkaga.com/wp-content/uploads/2023/11/B-Vascular-Lesions.jpeg",                                               // Vascular Lesion (VASC)
 }
 
 // Animation variants
@@ -107,7 +109,11 @@ const slideUp = {
 const pulseAnimation = {
   pulse: {
     scale: [1, 1.03, 1],
-    transition: { duration: 2, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" },
+    transition: {
+      duration: 2,
+      repeat: Infinity,
+      ease: "easeInOut",
+    },
   },
 }
 
@@ -115,12 +121,12 @@ const pulseAnimation = {
 async function resizeImage(file: File, maxDimension = 800): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
+
     reader.onload = (event) => {
       const img = new Image()
+
       img.onload = () => {
-        // Calculate new dimensions
-        let width = img.width
-        let height = img.height
+        let { width, height } = img
 
         if (width > height && width > maxDimension) {
           height = Math.round((height * maxDimension) / width)
@@ -130,33 +136,59 @@ async function resizeImage(file: File, maxDimension = 800): Promise<Blob> {
           height = maxDimension
         }
 
-        // Create canvas and resize
         const canvas = document.createElement("canvas")
         canvas.width = width
         canvas.height = height
-        const ctx = canvas.getContext("2d")
-        ctx?.drawImage(img, 0, 0, width, height)
 
-        // Convert to blob
+        const ctx = canvas.getContext("2d")
+        if (!ctx) {
+          reject(new Error("Canvas context creation failed"))
+          return
+        }
+
+        ctx.drawImage(img, 0, 0, width, height)
+
         canvas.toBlob(
           (blob) => {
-            if (blob) {
-              resolve(blob)
-            } else {
-              reject(new Error("Canvas to Blob conversion failed"))
-            }
+            blob ? resolve(blob) : reject(new Error("Canvas to Blob conversion failed"))
           },
           "image/jpeg",
           0.85,
         )
       }
+
       img.onerror = () => reject(new Error("Image loading error"))
       img.src = event.target?.result as string
     }
+
     reader.onerror = () => reject(new Error("File reading error"))
     reader.readAsDataURL(file)
   })
 }
+
+// Helper to preload all sample images
+async function fetchSampleImages(): Promise<Record<string, HTMLImageElement>> {
+  const result: Record<string, HTMLImageElement> = {}
+
+  await Promise.all(
+    Object.entries(sampleImages).map(async ([key, url]) => {
+      try {
+        const img = new Image()
+        img.src = url
+        await new Promise((resolve, reject) => {
+          img.onload = resolve
+          img.onerror = reject
+        })
+        result[key] = img
+      } catch (error) {
+        console.error(`Failed to load image for ${key}: ${error}`)
+      }
+    }),
+  )
+
+  return result
+}
+
 
 export default function DetectionPage() {
   const [image, setImage] = useState<string | null>(null)
@@ -239,6 +271,7 @@ export default function DetectionPage() {
         prediction: result.prediction as LesionType,
         confidences: result.confidences as Record<LesionType, number>,
         details: result.details as string[],
+        max_confidence: result.max_confidence as number | undefined,
       }
 
       setResults(typedResult)
@@ -283,6 +316,12 @@ export default function DetectionPage() {
       default:
         return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
     }
+  }
+
+  const getConfidenceColor = (confidence: number) => {
+    if (confidence >= 0.7) return "bg-green-500"
+    if (confidence >= 0.5) return "bg-amber-500"
+    return "bg-red-500"
   }
 
   const handleShareResults = () => {
@@ -487,6 +526,25 @@ export default function DetectionPage() {
                           >
                             <Share2 className="h-4 w-4" /> Share
                           </Button>
+                        </div>
+
+                        {/* Confidence indicator */}
+                        <div className="mb-4">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-sm text-slate-600 dark:text-slate-400">Confidence Level</span>
+                            <span className="text-sm font-medium">
+                              {((results.max_confidence || 0) * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                          <Progress
+                            value={(results.max_confidence || 0) * 100}
+                            className={`h-2 ${getConfidenceColor(results.max_confidence || 0)}`}
+                          />
+                          {(results.max_confidence || 0) < 0.5 && (
+                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                              Low confidence prediction. Results may not be reliable.
+                            </p>
+                          )}
                         </div>
 
                         <div className="mb-6">

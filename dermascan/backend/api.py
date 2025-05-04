@@ -12,43 +12,26 @@ from torchvision import models
 import logging
 import time
 import traceback
-import gc  # Garbage collector
-import psutil  # For memory monitoring
+import gc
+import psutil
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("api.log")
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
 DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
-CLASS_DESCRIPTIONS = {
-    'akiec': 'Actinic Keratosis',
-    'bcc': 'Basal Cell Carcinoma',
-    'bkl': 'Benign Keratosis',
-    'df': 'Dermatofibroma',
-    'mel': 'Melanoma',
-    'nv': 'Melanocytic Nevus',
-    'vasc': 'Vascular Lesion'
-}
-REQUEST_TIMEOUT = 25  # seconds
-MAX_IMAGE_SIZE = 1000  # Maximum dimension for images
+REQUEST_TIMEOUT = 30  # seconds
 
 # Initialize FastAPI
 app = FastAPI()
 
-# CORS configuration
+# CORS configuration - IMPORTANT: This must be added before any routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,  # Important: must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,18 +39,15 @@ app.add_middleware(
 # Model cache
 _model_cache = None
 
-# Memory monitoring
-def log_memory_usage():
-    process = psutil.Process(os.getpid())
-    memory_info = process.memory_info()
-    logger.info(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+@app.get("/")
+async def root():
+    logger.info("Root endpoint accessed")
+    return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-# Garbage collection helper
-def collect_garbage():
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    log_memory_usage()
+@app.options("/api/predict")
+async def options_predict():
+    # Handle preflight requests
+    return JSONResponse(content={"status": "ok"})
 
 # Define EfficientNet model architecture
 class SkinLesionModel(nn.Module):
@@ -75,7 +55,7 @@ class SkinLesionModel(nn.Module):
         super(SkinLesionModel, self).__init__()
         
         # Load EfficientNet-B3 (without pretrained weights)
-        self.efficientnet = models.efficientnet_b3(weights=None)
+        self.efficientnet = models.efficientnet_b3(weights=None)  # Updated from pretrained=False
         
         # Get the number of features in the last layer
         in_features = self.efficientnet.classifier[1].in_features
@@ -99,25 +79,13 @@ class SkinLesionModel(nn.Module):
         features = self.efficientnet(x)
         return self.classifier(features)
 
+
 # Fallback dummy model
 class DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
     def forward(self, x):
         return torch.zeros((1, len(DEFAULT_CLASSES)))
-
-# Preload model at startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Preloading model at startup")
-    try:
-        log_memory_usage()
-        get_model()
-        logger.info("Model preloaded successfully")
-        log_memory_usage()
-    except Exception as e:
-        logger.error(f"Failed to preload model: {e}")
-        logger.error(traceback.format_exc())
 
 # Load trained model with caching
 def get_model():
@@ -138,23 +106,53 @@ def get_model():
         logger.info(f"Loading model from {model_path}")
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
         
-        # Extract class names if available, otherwise use default
-        if isinstance(checkpoint, dict) and 'class_names' in checkpoint:
-            class_names = checkpoint['class_names']
-            model_state_dict = checkpoint['model_state_dict']
-            logger.info(f"Found class names in checkpoint: {class_names}")
+        # Extract class information from checkpoint
+        if isinstance(checkpoint, dict):
+            if 'class_names' in checkpoint:
+                class_names = checkpoint['class_names']
+                logger.info(f"Found class names in checkpoint: {class_names}")
+            else:
+                class_names = DEFAULT_CLASSES
+                logger.info(f"Using default class names: {class_names}")
+                
+            if 'model_state_dict' in checkpoint:
+                model_state_dict = checkpoint['model_state_dict']
+            elif 'state_dict' in checkpoint:
+                model_state_dict = checkpoint['state_dict']
+            else:
+                model_state_dict = checkpoint
+                
+            # Check if class_mapping exists
+            if 'class_mapping' in checkpoint:
+                class_mapping = checkpoint['class_mapping']
+                logger.info(f"Found class mapping in checkpoint: {class_mapping}")
         else:
             class_names = DEFAULT_CLASSES
             model_state_dict = checkpoint
             logger.info(f"Using default class names: {class_names}")
             
-        num_classes = len(class_names)
+        num_classes = len(class_names) if isinstance(class_names, list) else 7
 
         # Initialize the model with the correct architecture
         model = SkinLesionModel(num_classes=num_classes)
         
         # Load the state dictionary
-        model.load_state_dict(model_state_dict)
+        try:
+            model.load_state_dict(model_state_dict)
+            logger.info("Model state dictionary loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading state dictionary: {e}")
+            # Try to handle potential key mismatches
+            from collections import OrderedDict
+            new_state_dict = OrderedDict()
+            for k, v in model_state_dict.items():
+                name = k
+                if k.startswith('module.'):
+                    name = k[7:]  # Remove 'module.' prefix
+                new_state_dict[name] = v
+            model.load_state_dict(new_state_dict)
+            logger.info("Model loaded with key remapping")
+            
         model.eval()
         
         elapsed_time = time.time() - start_time
@@ -170,20 +168,6 @@ def get_model():
 
 # Image preprocessing
 def preprocess_image(image):
-    # Resize large images before processing to save memory and time
-    width, height = image.size
-    if width > MAX_IMAGE_SIZE or height > MAX_IMAGE_SIZE:
-        # Calculate aspect ratio
-        aspect_ratio = width / height
-        if width > height:
-            new_width = MAX_IMAGE_SIZE
-            new_height = int(new_width / aspect_ratio)
-        else:
-            new_height = MAX_IMAGE_SIZE
-            new_width = int(new_height * aspect_ratio)
-        logger.info(f"Resizing large image from {width}x{height} to {new_width}x{new_height}")
-        image = image.resize((new_width, new_height), Image.LANCZOS)
-    
     transform = transforms.Compose([
         transforms.Resize((300, 300)),
         transforms.ToTensor(),
@@ -224,21 +208,13 @@ def analyze_color_variation(image):
         return "Moderate"
     return "Significant"
 
-@app.get("/")
-async def root():
-    logger.info("Root endpoint accessed")
-    return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
-
-@app.options("/api/predict")
-async def options_predict():
-    return JSONResponse(content={"status": "ok"})
-
 # Prediction endpoint
 @app.post("/api/predict")
 async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     start_time = time.time()
     logger.info(f"Received prediction request for file: {file.filename}")
     log_memory_usage()
+
     
     try:
         # Set a timeout for the entire request processing
@@ -278,29 +254,34 @@ async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...
         logger.info(f"Predicted index: {predicted_idx}")
 
         # Map class indices to class names
-        if isinstance(class_names[0], str) and len(class_names) == len(DEFAULT_CLASSES):
-            # If class_names are strings and match the expected length, use them directly
-            confidences = {DEFAULT_CLASSES[i]: float(probs[i]) for i in range(len(DEFAULT_CLASSES))}
-            prediction = DEFAULT_CLASSES[predicted_idx]
-            logger.info(f"Direct prediction: {prediction}")
-        else:
-            # If class_names are full names or don't match expected format, 
-            # use a more robust mapping approach
-            
-            # Create a mapping from indices to default class codes
-            confidences = {}
-            for i in range(len(probs)):
-                if i < len(DEFAULT_CLASSES):
+        confidences = {}
+        
+        # Handle different class name formats
+        if isinstance(class_names, list) and len(class_names) == len(DEFAULT_CLASSES):
+            # If class_names are the expected length, map them to DEFAULT_CLASSES
+            for i in range(len(DEFAULT_CLASSES)):
+                if i < len(probs):
                     confidences[DEFAULT_CLASSES[i]] = float(probs[i])
-                    
-            # Get the prediction using the predicted index
+            
+            # Get the prediction
             if predicted_idx < len(DEFAULT_CLASSES):
                 prediction = DEFAULT_CLASSES[predicted_idx]
             else:
-                # Fallback if index is out of range
-                prediction = DEFAULT_CLASSES[0]
+                prediction = DEFAULT_CLASSES[0]  # Fallback
                 
-            logger.info(f"Mapped prediction: {prediction}")
+            logger.info(f"Direct prediction: {prediction}")
+        else:
+            # Fallback mapping
+            for i in range(min(len(DEFAULT_CLASSES), len(probs))):
+                confidences[DEFAULT_CLASSES[i]] = float(probs[i])
+            
+            prediction = DEFAULT_CLASSES[predicted_idx] if predicted_idx < len(DEFAULT_CLASSES) else DEFAULT_CLASSES[0]
+            logger.info(f"Fallback prediction: {prediction}")
+            
+        # Apply confidence threshold - if highest confidence is too low, mark as uncertain
+        max_confidence = max(confidences.values())
+        if max_confidence < 0.4:  # 40% threshold
+            logger.warning(f"Low confidence prediction: {max_confidence:.2f}")
             
         # Analyze image
         details = [
@@ -313,7 +294,8 @@ async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...
         response_data = {
             "prediction": prediction,
             "confidences": confidences,
-            "details": details
+            "details": details,
+            "max_confidence": float(max_confidence)
         }
         
         elapsed_time = time.time() - start_time
@@ -346,74 +328,33 @@ async def health_check():
     try:
         start_time = time.time()
         model, _ = get_model()
-        
-        # Create a test tensor with random data to verify model is working
-        dummy_input = torch.rand((1, 3, 300, 300))
-        
+        dummy_input = torch.zeros((1, 3, 300, 300))
         with torch.no_grad():
-            outputs = model(dummy_input)
-            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
-            
-        # Check if model is producing varied outputs
-        min_prob = float(torch.min(probs))
-        max_prob = float(torch.max(probs))
-        prob_range = max_prob - min_prob
-        
+            _ = model(dummy_input)
         elapsed_time = time.time() - start_time
-        log_memory_usage()
-        
         return {
             "status": "healthy", 
             "model_loaded": True,
-            "response_time": f"{elapsed_time:.2f} seconds",
-            "model_check": {
-                "probability_range": prob_range,
-                "min_probability": min_prob,
-                "max_probability": max_prob
-            }
+            "response_time": f"{elapsed_time:.2f} seconds"
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         logger.error(traceback.format_exc())
         return {"status": "unhealthy", "error": str(e)}
 
-# Debug endpoint to test model with sample data
-@app.get("/debug/model-test")
-async def model_test():
-    try:
-        model, class_names = get_model()
-        
-        # Create a test tensor with random data
-        test_input = torch.rand((1, 3, 300, 300))
-        
-        with torch.no_grad():
-            outputs = model(test_input)
-            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
-        
-        # Get predictions for each class
-        predictions = {}
-        for i, prob in enumerate(probs):
-            class_code = DEFAULT_CLASSES[i] if i < len(DEFAULT_CLASSES) else f"class_{i}"
-            class_name = CLASS_DESCRIPTIONS.get(class_code, f"Unknown Class {i}")
-            predictions[class_code] = {
-                "probability": float(prob),
-                "class_name": class_name
-            }
-        
-        return {
-            "status": "success",
-            "predictions": predictions,
-            "raw_probabilities": [float(p) for p in probs],
-            "class_names": class_names
-        }
-    except Exception as e:
-        logger.error(f"Model test failed: {e}")
-        logger.error(traceback.format_exc())
-        return {"status": "error", "message": str(e)}
+def collect_garbage():
+    logger.info("Running garbage collection")
+    gc.collect()
+    torch.cuda.empty_cache()
+
+def log_memory_usage():
+    process = psutil.Process(os.getpid())
+    memory_usage = process.memory_info().rss / 1024 ** 2  # in MB
+    logger.info(f"Memory usage: {memory_usage:.2f} MB")
 
 # Run with Uvicorn locally (optional)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8502))
+    port = int(os.environ.get("PORT", 8502))  # Use the port Render detected
     import uvicorn
     logger.info(f"Starting server on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, timeout_keep_alive=300)
+    uvicorn.run(app, host="0.0.0.0", port=port)
