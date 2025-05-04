@@ -8,6 +8,8 @@ export async function POST(request: NextRequest) {
 
     // Check if the image is too large and resize it if needed
     const file = formData.get("file") as File
+    let processedFormData = formData
+
     if (file && file.size > 1000000) {
       // 1MB
       console.log(`Large image detected (${file.size} bytes), resizing before sending to API`)
@@ -55,10 +57,8 @@ export async function POST(request: NextRequest) {
 
         // Create a new FormData with the resized image
         const newFormData = new FormData()
-        newFormData.append("file", resizedBlob, file.name)
-
-        // Replace the original formData
-        const formData = newFormData
+        newFormData.append("file", resizedBlob, file.name || "image.jpg")
+        processedFormData = newFormData
 
         // Clean up
         URL.revokeObjectURL(blobUrl)
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
       try {
         response = await fetch("https://dermascan-56zs.onrender.com/api/predict", {
           method: "POST",
-          body: formData,
+          body: processedFormData,
           signal: controller.signal,
         })
 

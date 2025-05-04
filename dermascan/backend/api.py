@@ -16,7 +16,14 @@ import gc  # Garbage collector
 import psutil  # For memory monitoring
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("api.log")
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -31,7 +38,7 @@ CLASS_DESCRIPTIONS = {
     'nv': 'Melanocytic Nevus',
     'vasc': 'Vascular Lesion'
 }
-REQUEST_TIMEOUT = 25  # seconds (reduced to stay under Render's limit)
+REQUEST_TIMEOUT = 25  # seconds
 MAX_IMAGE_SIZE = 1000  # Maximum dimension for images
 
 # Initialize FastAPI
@@ -61,28 +68,6 @@ def collect_garbage():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     log_memory_usage()
-
-# Preload model at startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Preloading model at startup")
-    try:
-        log_memory_usage()
-        get_model()
-        logger.info("Model preloaded successfully")
-        log_memory_usage()
-    except Exception as e:
-        logger.error(f"Failed to preload model: {e}")
-        logger.error(traceback.format_exc())
-
-@app.get("/")
-async def root():
-    logger.info("Root endpoint accessed")
-    return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
-
-@app.options("/api/predict")
-async def options_predict():
-    return JSONResponse(content={"status": "ok"})
 
 # Define EfficientNet model architecture
 class SkinLesionModel(nn.Module):
@@ -121,6 +106,19 @@ class DummyModel(nn.Module):
     def forward(self, x):
         return torch.zeros((1, len(DEFAULT_CLASSES)))
 
+# Preload model at startup
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Preloading model at startup")
+    try:
+        log_memory_usage()
+        get_model()
+        logger.info("Model preloaded successfully")
+        log_memory_usage()
+    except Exception as e:
+        logger.error(f"Failed to preload model: {e}")
+        logger.error(traceback.format_exc())
+
 # Load trained model with caching
 def get_model():
     global _model_cache
@@ -158,9 +156,6 @@ def get_model():
         # Load the state dictionary
         model.load_state_dict(model_state_dict)
         model.eval()
-
-        # IMPORTANT: Disable quantization as it might be affecting accuracy
-        # We'll prioritize accuracy over memory usage for now
         
         elapsed_time = time.time() - start_time
         logger.info(f"✅ Model loaded with {num_classes} classes in {elapsed_time:.2f} seconds.")
@@ -229,6 +224,15 @@ def analyze_color_variation(image):
         return "Moderate"
     return "Significant"
 
+@app.get("/")
+async def root():
+    logger.info("Root endpoint accessed")
+    return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
+
+@app.options("/api/predict")
+async def options_predict():
+    return JSONResponse(content={"status": "ok"})
+
 # Prediction endpoint
 @app.post("/api/predict")
 async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
@@ -276,8 +280,8 @@ async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...
         # Map class indices to class names
         if isinstance(class_names[0], str) and len(class_names) == len(DEFAULT_CLASSES):
             # If class_names are strings and match the expected length, use them directly
-            confidences = {class_names[i]: float(probs[i]) for i in range(len(class_names))}
-            prediction = class_names[predicted_idx]
+            confidences = {DEFAULT_CLASSES[i]: float(probs[i]) for i in range(len(DEFAULT_CLASSES))}
+            prediction = DEFAULT_CLASSES[predicted_idx]
             logger.info(f"Direct prediction: {prediction}")
         else:
             # If class_names are full names or don't match expected format, 
@@ -297,15 +301,6 @@ async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...
                 prediction = DEFAULT_CLASSES[0]
                 
             logger.info(f"Mapped prediction: {prediction}")
-            
-            # If class_names contains full descriptions, log them for reference
-            if isinstance(class_names[0], str) and class_names[0] not in DEFAULT_CLASSES:
-                logger.info(f"Original class name: {class_names[predicted_idx]}")
-
-        # Add a sanity check - if all confidences are very close, it might indicate a problem
-        confidence_values = list(confidences.values())
-        if max(confidence_values) - min(confidence_values) < 0.1:
-            logger.warning("Low confidence spread detected - model might not be discriminating well")
             
         # Analyze image
         details = [
@@ -382,7 +377,7 @@ async def health_check():
         logger.error(traceback.format_exc())
         return {"status": "unhealthy", "error": str(e)}
 
-# Add a debug endpoint to test model with sample data
+# Debug endpoint to test model with sample data
 @app.get("/debug/model-test")
 async def model_test():
     try:
@@ -399,7 +394,7 @@ async def model_test():
         predictions = {}
         for i, prob in enumerate(probs):
             class_code = DEFAULT_CLASSES[i] if i < len(DEFAULT_CLASSES) else f"class_{i}"
-            class_name = class_names[i] if i < len(class_names) else f"Unknown Class {i}"
+            class_name = CLASS_DESCRIPTIONS.get(class_code, f"Unknown Class {i}")
             predictions[class_code] = {
                 "probability": float(prob),
                 "class_name": class_name
@@ -421,4 +416,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8502))
     import uvicorn
     logger.info(f"Starting server on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, timeout_keep_alive=300)

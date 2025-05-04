@@ -1,15 +1,13 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef } from "react"
 import Image from "next/image"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Upload, Camera, Loader2, AlertTriangle, Info, Trash2, Share2 } from 'lucide-react'
-import GradientBackground from "@/components/gradient-background"
+import { Upload, Camera, Loader2, AlertTriangle, Info, Trash2, Share2 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Badge } from "@/components/ui/badge"
 
@@ -113,11 +111,59 @@ const pulseAnimation = {
   },
 }
 
+// Helper function to resize image client-side
+async function resizeImage(file: File, maxDimension = 800): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const img = new Image()
+      img.onload = () => {
+        // Calculate new dimensions
+        let width = img.width
+        let height = img.height
+
+        if (width > height && width > maxDimension) {
+          height = Math.round((height * maxDimension) / width)
+          width = maxDimension
+        } else if (height > maxDimension) {
+          width = Math.round((width * maxDimension) / height)
+          height = maxDimension
+        }
+
+        // Create canvas and resize
+        const canvas = document.createElement("canvas")
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext("2d")
+        ctx?.drawImage(img, 0, 0, width, height)
+
+        // Convert to blob
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve(blob)
+            } else {
+              reject(new Error("Canvas to Blob conversion failed"))
+            }
+          },
+          "image/jpeg",
+          0.85,
+        )
+      }
+      img.onerror = () => reject(new Error("Image loading error"))
+      img.src = event.target?.result as string
+    }
+    reader.onerror = () => reject(new Error("File reading error"))
+    reader.readAsDataURL(file)
+  })
+}
+
 export default function DetectionPage() {
   const [image, setImage] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [results, setResults] = useState<ResultType | null>(null)
   const [activeTab, setActiveTab] = useState<string>("upload")
+  const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -127,6 +173,7 @@ export default function DetectionPage() {
       reader.onload = (event) => {
         setImage(event.target?.result as string)
         setResults(null)
+        setError(null)
       }
       reader.readAsDataURL(file)
     }
@@ -139,150 +186,87 @@ export default function DetectionPage() {
   const handleClearImage = () => {
     setImage(null)
     setResults(null)
+    setError(null)
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
   }
 
   const handleDetection = async () => {
-    if (!image) return;
+    if (!image) return
 
-    setIsLoading(true);
+    setIsLoading(true)
+    setError(null)
 
     try {
       // Convert base64 image to blob
-      const base64Response = await fetch(image);
-      let blob = await base64Response.blob();
+      const base64Response = await fetch(image)
+      let blob = await base64Response.blob()
 
       // Check if the image is too large and resize it client-side
-      if (blob.size > 1000000) { // 1MB
-        console.log(`Large image detected (${blob.size} bytes), resizing before upload`);
-        
+      if (blob.size > 1000000) {
+        // 1MB
+        console.log(`Large image detected (${blob.size} bytes), resizing before upload`)
         try {
-          // Create an image element to resize
-          const img = new Image();
-          const blobUrl = URL.createObjectURL(blob);
-          
-          // Wait for the image to load
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = blobUrl;
-          });
-          
-          // Resize the image
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          
-          // Calculate new dimensions (max 1000px on longest side)
-          const aspectRatio = img.width / img.height;
-          let newWidth, newHeight;
-          
-          if (img.width > img.height) {
-            newWidth = Math.min(1000, img.width);
-            newHeight = newWidth / aspectRatio;
-          } else {
-            newHeight = Math.min(1000, img.height);
-            newWidth = newHeight * aspectRatio;
-          }
-          
-          canvas.width = newWidth;
-          canvas.height = newHeight;
-          ctx?.drawImage(img, 0, 0, newWidth, newHeight);
-          
-          // Convert to blob
-          blob = await new Promise<Blob>((resolve) => {
-            canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.85);
-          });
-          
-          // Clean up
-          URL.revokeObjectURL(blobUrl);
-          console.log(`Image resized to ${newWidth}x${newHeight}, new size: ${blob.size} bytes`);
+          blob = await resizeImage(new File([blob], "image.jpg", { type: blob.type }))
+          console.log(`Image resized, new size: ${blob.size} bytes`)
         } catch (error) {
-          console.error("Error resizing image:", error);
+          console.error("Error resizing image:", error)
           // Continue with original image if resize fails
         }
       }
 
       // Create form data
-      const formData = new FormData();
-      formData.append("file", blob, "image.jpg");
+      const formData = new FormData()
+      formData.append("file", blob, "image.jpg")
 
       // Send to our Next.js proxy endpoint instead of directly to the backend
       const response = await fetch("/api/proxy", {
         method: "POST",
         body: formData,
-      });
+      })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.error || `Failed to get prediction: ${response.status} ${response.statusText}`;
-        throw new Error(errorMessage);
+        const errorData = await response.json().catch(() => ({}))
+        const errorMessage = errorData.error || `Failed to get prediction: ${response.status} ${response.statusText}`
+        throw new Error(errorMessage)
       }
 
-      const result = await response.json();
+      const result = await response.json()
 
       // Type assertion to ensure the result matches our expected type
       const typedResult = {
         prediction: result.prediction as LesionType,
         confidences: result.confidences as Record<LesionType, number>,
         details: result.details as string[],
-      };
+      }
 
-      setResults(typedResult);
+      setResults(typedResult)
     } catch (error) {
-      console.error("Error during detection:", error);
-      
+      console.error("Error during detection:", error)
+
       // Show a more helpful error message to the user
-      let errorMessage = "An error occurred during detection.";
-      
+      let errorMessage = "An error occurred during detection."
+
       if (error instanceof Error) {
         if (error.message.includes("timeout") || error.message.includes("504")) {
-          errorMessage = "The request timed out. Try using a smaller image or try again later when the server is less busy.";
+          errorMessage =
+            "The request timed out. Try using a smaller image or try again later when the server is less busy."
         } else {
-          errorMessage = error.message;
+          errorMessage = error.message
         }
       }
-      
-      // Show error to user
-      alert(errorMessage);
-      
-      // For testing purposes, you can still show mock results
-      // But in production, you might want to remove this
-      const mockConfidences: Partial<Record<LesionType, number>> = {};
-      (Object.keys(lesionTypes) as LesionType[]).forEach((key) => {
-        mockConfidences[key] = Math.random() * 0.2;
-      });
 
-      // Normalize confidences to sum to 1
-      const sum = Object.values(mockConfidences).reduce((a, b) => a + b, 0);
-      const normalizedConfidences: Record<LesionType, number> = {} as Record<LesionType, number>;
-      (Object.keys(mockConfidences) as LesionType[]).forEach((key) => {
-        normalizedConfidences[key] = (mockConfidences[key] || 0) / sum;
-      });
-
-      // Find the highest confidence prediction
-      const entries = Object.entries(normalizedConfidences) as [LesionType, number][];
-      const prediction = entries.reduce(
-        (max, [key, value]) => (value > max[1] ? [key, value] : max),
-        ["nv" as LesionType, 0],
-      )[0];
-
-      const mockResults: ResultType = {
-        prediction,
-        confidences: normalizedConfidences,
-        details: ["Image quality: Good", "Lesion border: Well-defined", "Color variation: Moderate"],
-      };
-
-      setResults(mockResults);
+      setError(errorMessage)
     } finally {
-      setIsLoading(false);
+      setIsLoading(false)
     }
-  };
+  }
 
   const handleSampleImageSelect = (type: LesionType) => {
     setImage(sampleImages[type])
     setResults(null)
+    setError(null)
     setActiveTab("upload")
   }
 
@@ -328,7 +312,7 @@ export default function DetectionPage() {
 
   return (
     <main className="relative min-h-screen overflow-hidden">
-      <GradientBackground />
+      <div className="absolute inset-0 bg-gradient-to-b from-teal-50 to-cyan-100 dark:from-slate-900 dark:to-slate-800 -z-10"></div>
 
       <motion.div initial="hidden" animate="visible" className="container mx-auto px-4 py-12 relative z-10">
         <motion.h1
@@ -413,6 +397,20 @@ export default function DetectionPage() {
                           >
                             <Trash2 className="mr-2 h-4 w-4" /> Clear Image
                           </Button>
+                        </motion.div>
+                      )}
+
+                      {/* Error message */}
+                      {error && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="p-3 bg-red-50 dark:bg-red-900/20 rounded-md border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400"
+                        >
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                            <p className="text-sm">{error}</p>
+                          </div>
                         </motion.div>
                       )}
 
