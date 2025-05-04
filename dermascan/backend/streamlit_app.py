@@ -5,6 +5,8 @@ import io
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import time
+import os
 
 # Set page configuration
 st.set_page_config(
@@ -59,9 +61,28 @@ lesion_info = {
     }
 }
 
+# Function to check if API is running
+def check_api_status():
+    try:
+        response = requests.get("http://localhost:8502/")
+        return response.status_code == 200
+    except:
+        return False
+
 def main():
     st.title("DermaScan: Skin Lesion Classifier")
     st.write("Upload an image of a skin lesion for analysis.")
+
+    # Check API status
+    api_status = check_api_status()
+    if api_status:
+        st.success("✅ API server is running and connected")
+    else:
+        st.error("❌ API server is not running. Please start it with 'python api.py' in a separate terminal.")
+        st.info("If you've already started the API server, make sure it's running on port 8502.")
+        if st.button("Retry Connection"):
+            st.experimental_rerun()
+        return  # Don't proceed if API is not available
 
     # Medical disclaimer
     st.warning("**Medical Disclaimer**: This tool is for educational purposes only and is not a substitute for professional medical advice.")
@@ -79,8 +100,12 @@ def main():
                     # Prepare the file for the API request
                     files = {"file": uploaded_file.getvalue()}
                     
-                    # Make the API request
-                    response = requests.post("http://localhost:8502/api/predict", files=files)
+                    # Make the API request with timeout
+                    response = requests.post(
+                        "http://localhost:8502/api/predict", 
+                        files=files,
+                        timeout=30  # 30 second timeout
+                    )
                     
                     if response.status_code == 200:
                         result = response.json()
@@ -130,9 +155,15 @@ def main():
                     else:
                         st.error(f"Error: API returned status code {response.status_code}")
                         st.write(response.text)
+            except requests.exceptions.ConnectionError:
+                st.error("Connection Error: Could not connect to the API server.")
+                st.info("Make sure the API server is running on port 8502. Run 'python api.py' in a separate terminal.")
+            except requests.exceptions.Timeout:
+                st.error("Timeout Error: The API request took too long to complete.")
+                st.info("This might be due to a large image or server load. Try again with a smaller image.")
             except Exception as e:
                 st.error(f"Error: {e}")
-                st.info("Make sure the API server is running on port 8502. Run 'python api.py' in a separate terminal.")
+                st.info("An unexpected error occurred. Please check the console for more details.")
 
 if __name__ == "__main__":
     main()

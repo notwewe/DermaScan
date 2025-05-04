@@ -4,6 +4,11 @@ import os
 import time
 import threading
 import webbrowser
+import socket
+
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
 
 def run_api_server():
     print("Starting API server...")
@@ -20,6 +25,13 @@ def open_browser():
     webbrowser.open("http://localhost:8501")
 
 if __name__ == "__main__":
+    # Check if ports are already in use
+    if is_port_in_use(8501):
+        print("Warning: Port 8501 is already in use. Streamlit may not start correctly.")
+    
+    if is_port_in_use(8502):
+        print("Warning: Port 8502 is already in use. API server may not start correctly.")
+    
     # Start API server in a separate thread
     api_thread = threading.Thread(target=run_api_server)
     api_thread.daemon = True

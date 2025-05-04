@@ -1,18 +1,14 @@
-import streamlit as st
 import torch
 import torchvision.transforms as transforms
 import torchvision.models as models
 from PIL import Image
 import os
 import numpy as np
-import json
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from starlette.responses import JSONResponse
 from io import BytesIO
-import base64
-import requests
 
 # Class names
 CLASS_NAMES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
@@ -23,14 +19,18 @@ app = FastAPI()
 # Add CORS middleware to allow requests from the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app/"],  # In production, replace with your frontend URL
+    allow_origins=["https://dermascan-inh9wvmkwe3mtfuzphgvdr.streamlit.app/"],  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Root endpoint for API health check
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
+
 # Load model
-@st.cache_resource
 def load_model():
     try:
         model = models.efficientnet_b3(pretrained=False)
