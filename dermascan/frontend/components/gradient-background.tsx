@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
+import { motion } from "framer-motion"
 
 export default function GradientBackground() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -84,5 +85,14 @@ export default function GradientBackground() {
     }
   }, [])
 
-  return <canvas ref={canvasRef} className="fixed inset-0 -z-10" />
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 1 }}
+      className="fixed inset-0 -z-10"
+    >
+      <canvas ref={canvasRef} className="fixed inset-0 -z-10" />
+    </motion.div>
+  )
 }

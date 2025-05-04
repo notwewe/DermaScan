@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Next.js
+.next/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Model and data
+model/data/
+*.pth
+*.h5
+*.onnx
+*.pb
+
+# Build outputs
+build/
+dist/
+.vercel
+
+# Misc
+.DS_Store
+*.pem
+.env*.local
