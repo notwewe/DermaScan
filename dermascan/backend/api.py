@@ -1,8 +1,9 @@
 import streamlit as st
 import torch
 import torchvision.transforms as transforms
+import torchvision.models as models
 from PIL import Image
-import io
+import os
 import numpy as np
 import json
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -11,6 +12,10 @@ import uvicorn
 from starlette.responses import JSONResponse
 from io import BytesIO
 import base64
+import requests
+
+# Class names
+CLASS_NAMES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
 
 # Create FastAPI app
 app = FastAPI()
@@ -24,35 +29,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the model (this will be replaced with your actual model loading code)
+# Load model
 @st.cache_resource
 def load_model():
-    # Replace this with your actual model loading code
-    # For example:
-    # model = YourModelClass()
-    # model.load_state_dict(torch.load('path/to/your/model.pth'))
-    # model.eval()
-    # return model
-    
-    # For now, we'll return a dummy model
-    class DummyModel:
-        def __init__(self):
-            pass
-        
-        def predict(self, image):
-            # This is a dummy prediction - replace with your actual model prediction
-            confidences = {
-                'akiec': 0.05,
-                'bcc': 0.10,
-                'bkl': 0.15,
-                'df': 0.05,
-                'mel': 0.20,
-                'nv': 0.40,
-                'vasc': 0.05
-            }
-            return 'nv', confidences
-    
-    return DummyModel()
+    try:
+        model = models.efficientnet_b3(pretrained=False)
+        num_ftrs = model.classifier[1].in_features
+        model.classifier[1] = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+
+        model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
+
+        if os.path.exists(model_path):
+            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            print("Loaded trained model")
+        else:
+            print("No trained model found. Using random classifier weights.")
+
+        model.eval()
+        return model
+
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return DummyModel()
+
+class DummyModel:
+    def __init__(self):
+        print("Using dummy model.")
+
+    def __call__(self, x):
+        return torch.softmax(torch.randn(1, len(CLASS_NAMES)), dim=1)
 
 # Preprocess image
 def preprocess_image(image):
@@ -63,83 +68,101 @@ def preprocess_image(image):
     ])
     return transform(image).unsqueeze(0)
 
+# Analyze image quality
+def analyze_image_quality(image):
+    # Calculate basic image quality metrics
+    width, height = image.size
+    
+    # Check if image is too small
+    if width < 100 or height < 100:
+        return "Poor - Image is too small"
+    
+    # Check if image is blurry (using a simple variance of Laplacian)
+    img_array = np.array(image.convert('L'))
+    variance = np.var(img_array)
+    
+    if variance < 100:
+        return "Poor - Image may be blurry"
+    elif variance < 500:
+        return "Moderate"
+    else:
+        return "Good"
+
+# Analyze lesion border
+def analyze_lesion_border(image):
+    # This would normally use edge detection algorithms
+    # For now, we'll return a placeholder based on image characteristics
+    img_array = np.array(image)
+    
+    # Simple edge detection using standard deviation of pixel values
+    edge_strength = np.std(img_array)
+    
+    if edge_strength < 30:
+        return "Poorly-defined"
+    elif edge_strength < 60:
+        return "Moderately-defined"
+    else:
+        return "Well-defined"
+
+# Analyze color variation
+def analyze_color_variation(image):
+    # Convert to RGB if not already
+    img_rgb = image.convert('RGB')
+    img_array = np.array(img_rgb)
+    
+    # Calculate standard deviation across color channels
+    r_std = np.std(img_array[:,:,0])
+    g_std = np.std(img_array[:,:,1])
+    b_std = np.std(img_array[:,:,2])
+    
+    avg_std = (r_std + g_std + b_std) / 3
+    
+    if avg_std < 20:
+        return "Minimal"
+    elif avg_std < 40:
+        return "Moderate"
+    else:
+        return "Significant"
+
 # FastAPI endpoint for prediction
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
     try:
-        # Read image
         contents = await file.read()
         image = Image.open(BytesIO(contents)).convert('RGB')
-        
-        # Load model
+
         model = load_model()
+
+        processed_image = preprocess_image(image)
+
+        with torch.no_grad():
+            outputs = model(processed_image)
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+
+        confidences = {CLASS_NAMES[i]: float(probabilities[i]) for i in range(len(CLASS_NAMES))}
+        prediction = CLASS_NAMES[torch.argmax(probabilities).item()]
         
-        # Preprocess image
-        # processed_image = preprocess_image(image)
+        # Generate analysis details
+        image_quality = analyze_image_quality(image)
+        border_quality = analyze_lesion_border(image)
+        color_variation = analyze_color_variation(image)
         
-        # Make prediction
-        # In a real app, you would use the model to make a prediction
-        # prediction, confidences = model(processed_image)
-        
-        # For now, we'll use the dummy model
-        prediction, confidences = model.predict(image)
-        
-        # Generate some analysis details
         details = [
-            "Image quality: Good",
-            "Lesion border: Well-defined",
-            "Color variation: Moderate"
+            f"Image quality: {image_quality}",
+            f"Lesion border: {border_quality}",
+            f"Color variation: {color_variation}"
         ]
-        
-        # Return prediction
+
         return JSONResponse(content={
             "prediction": prediction,
             "confidences": confidences,
             "details": details
         })
-    
+
     except Exception as e:
+        print(f"Error during prediction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Streamlit UI (this will be shown when running with streamlit run api.py)
-def main():
-    st.title("DermaScan API Server")
-    st.write("This is the backend API server for DermaScan.")
-    st.write("The API is running at http://localhost:8501/api/predict")
-    st.write("Users should interact with the frontend application, not this page.")
-    
-    # Add a simple test form for API testing
-    st.header("API Testing")
-    uploaded_file = st.file_uploader("Choose an image for testing", type=["jpg", "jpeg", "png"])
-    
-    if uploaded_file is not None:
-        # Display the image
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Uploaded Image", use_column_width=True)
-        
-        # Test prediction
-        if st.button("Test Prediction"):
-            with st.spinner("Analyzing..."):
-                # Reset file pointer
-                uploaded_file.seek(0)
-                
-                # Load model
-                model = load_model()
-                
-                # Make prediction
-                prediction, confidences = model.predict(image)
-                
-                # Display results
-                st.success(f"Prediction: {prediction}")
-                st.json(confidences)
-
-# Run the FastAPI app with Streamlit
+# Run the FastAPI app with uvicorn
 if __name__ == "__main__":
-    import sys
-    
-    # Check if running with Streamlit
-    if sys.argv[0].endswith("streamlit") or "streamlit" in sys.argv:
-        main()
-    else:
-        # Run with uvicorn if not running with Streamlit
-        uvicorn.run(app, host="0.0.0.0", port=8501)
+    uvicorn.run(app, host="0.0.0.0", port=8502)

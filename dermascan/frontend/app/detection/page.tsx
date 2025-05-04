@@ -86,13 +86,13 @@ const lesionTypes: LesionTypes = {
 
 // Sample images for each lesion type
 const sampleImages: SampleImages = {
-  akiec: "/Actinic Keratosis.jpg?height=300&width=300",
-  bcc: "/Basal Cell Carcinoma.jpg?height=300&width=300",
-  bkl: "/Benign Keratosis.jpg?height=300&width=300",
-  df: "/Dermatofibroma.jpg?height=300&width=300",
-  mel: "/Melanoma.jpg?height=300&width=300",
-  nv: "/Melanocytic Nevus.jpg?height=300&width=300",
-  vasc: "/Vascular Lesion.jpg?height=300&width=300",
+  akiec: "/placeholder.svg?height=300&width=300",
+  bcc: "/placeholder.svg?height=300&width=300",
+  bkl: "/placeholder.svg?height=300&width=300",
+  df: "/placeholder.svg?height=300&width=300",
+  mel: "/placeholder.svg?height=300&width=300",
+  nv: "/placeholder.svg?height=300&width=300",
+  vasc: "/placeholder.svg?height=300&width=300",
 }
 
 // Animation variants
@@ -159,7 +159,7 @@ export default function DetectionPage() {
       formData.append("file", blob, "image.jpg")
 
       // Send to Streamlit backend
-      const response = await fetch("http://localhost:8501/api/predict", {
+      const response = await fetch("http://localhost:8502/api/predict", {
         method: "POST",
         body: formData,
       })
@@ -262,7 +262,7 @@ export default function DetectionPage() {
     <main className="relative min-h-screen overflow-hidden">
       <GradientBackground />
 
-      <div className="container mx-auto px-4 py-12 relative z-10">
+      <motion.div initial="hidden" animate="visible" className="container mx-auto px-4 py-12 relative z-10">
         <motion.h1
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -579,7 +579,7 @@ export default function DetectionPage() {
             </TabsContent>
           </div>
         </Tabs>
-      </div>
+      </motion.div>
     </main>
   )
 }
