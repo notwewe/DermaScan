@@ -79,7 +79,7 @@ def main():
         st.success("✅ API server is running and connected")
     else:
         st.error("❌ API server is not running. Please start it with 'python api.py' in a separate terminal.")
-        st.info("If you've already started the API server, make sure it's running on port 8502.")
+        st.info("If you've already started the API server, make sure it's running.")
         if st.button("Retry Connection"):
             st.experimental_rerun()
         return  # Don't proceed if API is not available
@@ -157,7 +157,7 @@ def main():
                         st.write(response.text)
             except requests.exceptions.ConnectionError:
                 st.error("Connection Error: Could not connect to the API server.")
-                st.info("Make sure the API server is running on port 8502. Run 'python api.py' in a separate terminal.")
+                st.info("Make sure the API server is running. Run 'python api.py' in a separate terminal.")
             except requests.exceptions.Timeout:
                 st.error("Timeout Error: The API request took too long to complete.")
                 st.info("This might be due to a large image or server load. Try again with a smaller image.")
