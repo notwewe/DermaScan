@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from starlette.responses import JSONResponse
 from io import BytesIO
+import torch.nn as nn
 
 # Class names
 CLASS_NAMES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
@@ -30,40 +31,34 @@ app.add_middleware(
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-# Dummy model used if loading fails
-class DummyModel:
+MODEL_PATH = "skin_lesion_model.pth"  # adjust if the path is different
+
+class DummyModel(nn.Module):
     def __init__(self):
-        print("⚠️ Using dummy model.")
+        super().__init__()
 
-    def __call__(self, x):
-        return torch.softmax(torch.randn(1, len(CLASS_NAMES)), dim=1)
+    def forward(self, x):
+        return torch.zeros((1, 7))  # match expected output
 
-# Load model from saved checkpoint
 def load_model():
     try:
-        model = models.efficientnet_b3(pretrained=False)
-        num_ftrs = model.classifier.in_features
-        model.classifier = torch.nn.Linear(num_ftrs, len(CLASS_NAMES))
+        model = models.efficientnet_b3(weights=None)  # Don't load pretrained
+        num_features = model.classifier[1].in_features
 
-        model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
+        # This should match your training config
+        model.classifier[1] = nn.Linear(num_features, 512)  # this matches your trained model
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
 
-        if os.path.exists(model_path):
-            checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+        # Update classifier to match actual number of HAM10000 classes
+        model.classifier[1] = nn.Linear(512, 7)  # final layer for 7 skin classes
 
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-                print("✅ Trained model loaded successfully.")
-            else:
-                print("⚠️ Key 'model_state_dict' not found in checkpoint. Skipping weight loading.")
-        else:
-            print("❌ No trained model found. Using random classifier weights.")
-
-        model.eval()
-        return model
-
+        return model.eval()
     except Exception as e:
         print(f"❌ Error loading model: {e}")
+        print("⚠️ Using dummy model.")
         return DummyModel()
+
+model = load_model()
 
 # Preprocess image
 def preprocess_image(image):
