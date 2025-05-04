@@ -19,7 +19,7 @@ app = FastAPI()
 # Add CORS middleware to allow requests from the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://dermascan-inh9wvmkwe3mtfuzphgvdr.streamlit.app/"],  # Allow all origins for development
+    allow_origins=["https://derma-scan-kappa.vercel.app/"],  # Allow all origins for development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

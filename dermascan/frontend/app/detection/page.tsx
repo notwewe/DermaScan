@@ -159,7 +159,7 @@ export default function DetectionPage() {
       formData.append("file", blob, "image.jpg")
 
       // Send to Streamlit backend
-      const response = await fetch("https://dermascan-inh9wvmkwe3mtfuzphgvdr.streamlit.app/", {
+      const response = await fetch("https://dermascan-56zs.onrender.com/api/predict", {
         method: "POST",
         body: formData,
       })

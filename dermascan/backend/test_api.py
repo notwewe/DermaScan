@@ -8,7 +8,7 @@ def test_api_connection():
     
     # Try to connect to the root endpoint
     try:
-        response = requests.get("http://localhost:8502/")
+        response = requests.get("https://dermascan-56zs.onrender.com")
         if response.status_code == 200:
             print("✅ API server is running and responding")
             print(f"Response: {response.json()}")

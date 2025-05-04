@@ -64,7 +64,7 @@ lesion_info = {
 # Function to check if API is running
 def check_api_status():
     try:
-        response = requests.get("http://localhost:8502/")
+        response = requests.get("https://dermascan-56zs.onrender.com")
         return response.status_code == 200
     except:
         return False
@@ -102,7 +102,7 @@ def main():
                     
                     # Make the API request with timeout
                     response = requests.post(
-                        "http://localhost:8502/api/predict", 
+                        "https://dermascan-56zs.onrender.com/api/predict", 
                         files=files,
                         timeout=30  # 30 second timeout
                     )
