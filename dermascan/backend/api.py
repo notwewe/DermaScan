@@ -1,15 +1,14 @@
 import torch
 import torchvision.transforms as transforms
-import torchvision.models as models
 from PIL import Image, UnidentifiedImageError
 import os
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 from starlette.responses import JSONResponse
 from io import BytesIO
 import torch.nn as nn
+from torchvision import models
 
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
@@ -20,7 +19,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app"],  # Frontend domain
+    allow_origins=["https://derma-scan-kappa.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,7 +30,41 @@ async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
 
-# Fallback Dummy Model
+# Custom model class used in training
+class ImprovedSkinLesionModel(nn.Module):
+    def __init__(self, num_classes=7, dropout_rate=0.5):
+        super(ImprovedSkinLesionModel, self).__init__()
+        self.efficientnet = models.efficientnet_b3(weights='DEFAULT')
+        in_features = self.efficientnet.classifier[1].in_features
+        self.efficientnet.classifier = nn.Identity()
+
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate / 2),
+            nn.Linear(128, num_classes)
+        )
+
+        self._freeze_layers()
+
+    def _freeze_layers(self):
+        for param in self.efficientnet.parameters():
+            param.requires_grad = False
+        for param in self.efficientnet.features[-1].parameters():
+            param.requires_grad = True
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+
+    def forward(self, x):
+        features = self.efficientnet(x)
+        return self.classifier(features)
+
+
+# Fallback dummy model
 class DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
@@ -39,7 +72,7 @@ class DummyModel(nn.Module):
         return torch.zeros((1, len(DEFAULT_CLASSES)))
 
 
-# Load the trained model
+# Load trained model
 def load_model():
     try:
         model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
@@ -51,15 +84,10 @@ def load_model():
         class_names = checkpoint.get('class_names', DEFAULT_CLASSES)
         num_classes = len(class_names)
 
-        model = models.efficientnet_b3(weights=None)
-        in_features = model.classifier[1].in_features
-        model.classifier = nn.Sequential(
-            nn.Dropout(p=0.3),
-            nn.Linear(in_features, num_classes)
-        )
-
+        model = ImprovedSkinLesionModel(num_classes=num_classes)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
+
         print(f"✅ Model loaded with {num_classes} classes.")
         return model, class_names
 
@@ -68,7 +96,7 @@ def load_model():
         return DummyModel(), DEFAULT_CLASSES
 
 
-# Preprocessing
+# Image preprocessing
 def preprocess_image(image):
     transform = transforms.Compose([
         transforms.Resize((300, 300)),
@@ -79,7 +107,7 @@ def preprocess_image(image):
     return transform(image).unsqueeze(0)
 
 
-# Analysis helpers
+# Image quality analysis helpers
 def analyze_image_quality(image):
     width, height = image.size
     if width < 100 or height < 100:
@@ -112,7 +140,7 @@ def analyze_color_variation(image):
     return "Significant"
 
 
-# Prediction Endpoint
+# Prediction endpoint
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
     try:
@@ -151,7 +179,8 @@ async def predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# Uvicorn entry
+# Run app with Uvicorn
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port)
