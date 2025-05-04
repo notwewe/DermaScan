@@ -11,108 +11,108 @@ from starlette.responses import JSONResponse
 from io import BytesIO
 import torch.nn as nn
 
-# Create FastAPI app
+# Constants
+MODEL_PATH = "skin_lesion_model.pth"
+DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+
+# Initialize FastAPI
 app = FastAPI()
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app"],
+    allow_origins=["https://derma-scan-kappa.vercel.app"],  # Frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Health check
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-MODEL_PATH = "skin_lesion_model.pth"
 
+# Fallback Dummy Model
 class DummyModel(nn.Module):
     def __init__(self):
         super().__init__()
     def forward(self, x):
-        return torch.zeros((1, 7))  # default fallback
+        return torch.zeros((1, len(DEFAULT_CLASSES)))
 
-# Load model
+
+# Load the trained model
 def load_model():
     try:
         model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
         if not os.path.exists(model_path):
-            print("❌ Model not found. Using dummy.")
-            return DummyModel(), ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+            print("❌ Trained model file not found. Using DummyModel.")
+            return DummyModel(), DEFAULT_CLASSES
 
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-        class_names = checkpoint.get('class_names', ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc'])
+        class_names = checkpoint.get('class_names', DEFAULT_CLASSES)
         num_classes = len(class_names)
 
         model = models.efficientnet_b3(weights=None)
-        num_ftrs = model.classifier[1].in_features
-        model.classifier = torch.nn.Sequential(
-            torch.nn.Dropout(p=0.3),
-            torch.nn.Linear(num_ftrs, num_classes)
+        in_features = model.classifier[1].in_features
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.3),
+            nn.Linear(in_features, num_classes)
         )
 
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
-
-        print(f"✅ Loaded trained model with {num_classes} classes: {class_names}")
+        print(f"✅ Model loaded with {num_classes} classes.")
         return model, class_names
 
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
-        return DummyModel(), ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+        print(f"❌ Failed to load model: {e}")
+        return DummyModel(), DEFAULT_CLASSES
 
-# Image preprocessing
+
+# Preprocessing
 def preprocess_image(image):
     transform = transforms.Compose([
         transforms.Resize((300, 300)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize([0.485, 0.456, 0.406],
+                             [0.229, 0.224, 0.225])
     ])
     return transform(image).unsqueeze(0)
 
-# Quality analysis helpers
+
+# Analysis helpers
 def analyze_image_quality(image):
     width, height = image.size
     if width < 100 or height < 100:
         return "Poor - Image is too small"
-    img_array = np.array(image.convert('L'))
-    variance = np.var(img_array)
+    variance = np.var(np.array(image.convert('L')))
     if variance < 100:
-        return "Poor - Image may be blurry"
+        return "Poor - Blurry"
     elif variance < 500:
         return "Moderate"
-    else:
-        return "Good"
+    return "Good"
 
 def analyze_lesion_border(image):
-    img_array = np.array(image)
-    edge_strength = np.std(img_array)
-    if edge_strength < 30:
+    std = np.std(np.array(image))
+    if std < 30:
         return "Poorly-defined"
-    elif edge_strength < 60:
+    elif std < 60:
         return "Moderately-defined"
-    else:
-        return "Well-defined"
+    return "Well-defined"
 
 def analyze_color_variation(image):
-    img_rgb = image.convert('RGB')
-    img_array = np.array(img_rgb)
-    r_std = np.std(img_array[:, :, 0])
-    g_std = np.std(img_array[:, :, 1])
-    b_std = np.std(img_array[:, :, 2])
+    img = np.array(image.convert('RGB'))
+    r_std = np.std(img[:, :, 0])
+    g_std = np.std(img[:, :, 1])
+    b_std = np.std(img[:, :, 2])
     avg_std = (r_std + g_std + b_std) / 3
     if avg_std < 20:
         return "Minimal"
     elif avg_std < 40:
         return "Moderate"
-    else:
-        return "Significant"
+    return "Significant"
 
-# Prediction endpoint
+
+# Prediction Endpoint
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
     try:
@@ -120,26 +120,22 @@ async def predict(file: UploadFile = File(...)):
         try:
             image = Image.open(BytesIO(contents)).convert('RGB')
         except UnidentifiedImageError:
-            raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.")
+            raise HTTPException(status_code=400, detail="Invalid image file.")
 
         model, class_names = load_model()
-        processed_image = preprocess_image(image)
+        input_tensor = preprocess_image(image)
 
         with torch.no_grad():
-            outputs = model(processed_image)
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+            outputs = model(input_tensor)
+            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
 
-        confidences = {class_names[i]: float(probabilities[i]) for i in range(len(class_names))}
-        prediction = class_names[torch.argmax(probabilities).item()]
-
-        image_quality = analyze_image_quality(image)
-        border_quality = analyze_lesion_border(image)
-        color_variation = analyze_color_variation(image)
+        confidences = {class_names[i]: float(probs[i]) for i in range(len(class_names))}
+        prediction = class_names[torch.argmax(probs).item()]
 
         details = [
-            f"Image quality: {image_quality}",
-            f"Lesion border: {border_quality}",
-            f"Color variation: {color_variation}"
+            f"Image quality: {analyze_image_quality(image)}",
+            f"Lesion border: {analyze_lesion_border(image)}",
+            f"Color variation: {analyze_color_variation(image)}"
         ]
 
         return JSONResponse(content={
@@ -151,11 +147,11 @@ async def predict(file: UploadFile = File(...)):
     except HTTPException as http_err:
         raise http_err
     except Exception as e:
-        print(f"❌ Error during prediction: {e}")
+        print(f"❌ Prediction error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-# Run the app
+
+# Uvicorn entry
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
