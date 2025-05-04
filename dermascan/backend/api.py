@@ -31,6 +31,37 @@ async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
 
+# Define EfficientNet model architecture
+class SkinLesionModel(nn.Module):
+    def __init__(self, num_classes=7, dropout_rate=0.5):
+        super(SkinLesionModel, self).__init__()
+        
+        # Load EfficientNet-B3 (without pretrained weights)
+        self.efficientnet = models.efficientnet_b3(pretrained=False)
+        
+        # Get the number of features in the last layer
+        in_features = self.efficientnet.classifier[1].in_features
+        
+        # Replace classifier with custom head
+        self.efficientnet.classifier = nn.Identity()
+        
+        # Custom classifier with dropout for regularization
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate/2),
+            nn.Linear(128, num_classes)
+        )
+    
+    def forward(self, x):
+        features = self.efficientnet(x)
+        return self.classifier(features)
+
+
 # Fallback dummy model
 class DummyModel(nn.Module):
     def __init__(self):
@@ -47,12 +78,22 @@ def load_model():
             return DummyModel(), DEFAULT_CLASSES
 
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-        class_names = checkpoint.get('class_names', DEFAULT_CLASSES)
+        
+        # Extract class names if available, otherwise use default
+        if isinstance(checkpoint, dict) and 'class_names' in checkpoint:
+            class_names = checkpoint['class_names']
+            model_state_dict = checkpoint['model_state_dict']
+        else:
+            class_names = DEFAULT_CLASSES
+            model_state_dict = checkpoint
+            
         num_classes = len(class_names)
 
-        model = models.resnet18(pretrained=False)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Initialize the model with the correct architecture
+        model = SkinLesionModel(num_classes=num_classes)
+        
+        # Load the state dictionary
+        model.load_state_dict(model_state_dict)
         model.eval()
 
         print(f"✅ Model loaded with {num_classes} classes.")
@@ -65,7 +106,7 @@ def load_model():
 # Image preprocessing
 def preprocess_image(image):
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((300, 300)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406],
                              [0.229, 0.224, 0.225])
@@ -121,8 +162,15 @@ async def predict(file: UploadFile = File(...)):
             outputs = model(input_tensor)
             probs = torch.nn.functional.softmax(outputs, dim=1)[0]
 
-        confidences = {class_names[i]: float(probs[i]) for i in range(len(class_names))}
-        prediction = class_names[torch.argmax(probs).item()]
+        # Map class indices to class names
+        if isinstance(class_names[0], str) and class_names[0] in DEFAULT_CLASSES:
+            # If class_names are the short codes, use them directly
+            confidences = {class_names[i]: float(probs[i]) for i in range(len(class_names))}
+            prediction = class_names[torch.argmax(probs).item()]
+        else:
+            # If class_names are full names, map back to short codes for frontend
+            confidences = {DEFAULT_CLASSES[i]: float(probs[i]) for i in range(len(DEFAULT_CLASSES))}
+            prediction = DEFAULT_CLASSES[torch.argmax(probs).item()]
 
         details = [
             f"Image quality: {analyze_image_quality(image)}",
