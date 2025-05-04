@@ -158,14 +158,14 @@ export default function DetectionPage() {
       const formData = new FormData()
       formData.append("file", blob, "image.jpg")
 
-      // Send to Streamlit backend
-      const response = await fetch("https://dermascan-56zs.onrender.com/api/predict", {
+      // Send to our Next.js proxy endpoint instead of directly to the backend
+      const response = await fetch("/api/proxy", {
         method: "POST",
         body: formData,
       })
 
       if (!response.ok) {
-        throw new Error("Failed to get prediction")
+        throw new Error(`Failed to get prediction: ${response.status} ${response.statusText}`)
       }
 
       const result = await response.json()
