@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Upload, Camera, Loader2, AlertTriangle, Info, Trash2, Share2 } from "lucide-react"
+import { Upload, Camera, Loader2, AlertTriangle, Info, Trash2, Share2 } from 'lucide-react'
 import GradientBackground from "@/components/gradient-background"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Badge } from "@/components/ui/badge"
@@ -145,72 +145,140 @@ export default function DetectionPage() {
   }
 
   const handleDetection = async () => {
-    if (!image) return
+    if (!image) return;
 
-    setIsLoading(true)
+    setIsLoading(true);
 
     try {
       // Convert base64 image to blob
-      const base64Response = await fetch(image)
-      const blob = await base64Response.blob()
+      const base64Response = await fetch(image);
+      let blob = await base64Response.blob();
+
+      // Check if the image is too large and resize it client-side
+      if (blob.size > 1000000) { // 1MB
+        console.log(`Large image detected (${blob.size} bytes), resizing before upload`);
+        
+        try {
+          // Create an image element to resize
+          const img = new Image();
+          const blobUrl = URL.createObjectURL(blob);
+          
+          // Wait for the image to load
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = blobUrl;
+          });
+          
+          // Resize the image
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Calculate new dimensions (max 1000px on longest side)
+          const aspectRatio = img.width / img.height;
+          let newWidth, newHeight;
+          
+          if (img.width > img.height) {
+            newWidth = Math.min(1000, img.width);
+            newHeight = newWidth / aspectRatio;
+          } else {
+            newHeight = Math.min(1000, img.height);
+            newWidth = newHeight * aspectRatio;
+          }
+          
+          canvas.width = newWidth;
+          canvas.height = newHeight;
+          ctx?.drawImage(img, 0, 0, newWidth, newHeight);
+          
+          // Convert to blob
+          blob = await new Promise<Blob>((resolve) => {
+            canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.85);
+          });
+          
+          // Clean up
+          URL.revokeObjectURL(blobUrl);
+          console.log(`Image resized to ${newWidth}x${newHeight}, new size: ${blob.size} bytes`);
+        } catch (error) {
+          console.error("Error resizing image:", error);
+          // Continue with original image if resize fails
+        }
+      }
 
       // Create form data
-      const formData = new FormData()
-      formData.append("file", blob, "image.jpg")
+      const formData = new FormData();
+      formData.append("file", blob, "image.jpg");
 
       // Send to our Next.js proxy endpoint instead of directly to the backend
       const response = await fetch("/api/proxy", {
         method: "POST",
         body: formData,
-      })
+      });
 
       if (!response.ok) {
-        throw new Error(`Failed to get prediction: ${response.status} ${response.statusText}`)
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error || `Failed to get prediction: ${response.status} ${response.statusText}`;
+        throw new Error(errorMessage);
       }
 
-      const result = await response.json()
+      const result = await response.json();
 
       // Type assertion to ensure the result matches our expected type
       const typedResult = {
         prediction: result.prediction as LesionType,
         confidences: result.confidences as Record<LesionType, number>,
         details: result.details as string[],
-      }
+      };
 
-      setResults(typedResult)
+      setResults(typedResult);
     } catch (error) {
-      console.error("Error during detection:", error)
-      // Fallback to mock results for testing
-      const mockConfidences: Partial<Record<LesionType, number>> = {}
-      ;(Object.keys(lesionTypes) as LesionType[]).forEach((key) => {
-        mockConfidences[key] = Math.random() * 0.2
-      })
+      console.error("Error during detection:", error);
+      
+      // Show a more helpful error message to the user
+      let errorMessage = "An error occurred during detection.";
+      
+      if (error instanceof Error) {
+        if (error.message.includes("timeout") || error.message.includes("504")) {
+          errorMessage = "The request timed out. Try using a smaller image or try again later when the server is less busy.";
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      // Show error to user
+      alert(errorMessage);
+      
+      // For testing purposes, you can still show mock results
+      // But in production, you might want to remove this
+      const mockConfidences: Partial<Record<LesionType, number>> = {};
+      (Object.keys(lesionTypes) as LesionType[]).forEach((key) => {
+        mockConfidences[key] = Math.random() * 0.2;
+      });
 
       // Normalize confidences to sum to 1
-      const sum = Object.values(mockConfidences).reduce((a, b) => a + b, 0)
-      const normalizedConfidences: Record<LesionType, number> = {} as Record<LesionType, number>
-      ;(Object.keys(mockConfidences) as LesionType[]).forEach((key) => {
-        normalizedConfidences[key] = (mockConfidences[key] || 0) / sum
-      })
+      const sum = Object.values(mockConfidences).reduce((a, b) => a + b, 0);
+      const normalizedConfidences: Record<LesionType, number> = {} as Record<LesionType, number>;
+      (Object.keys(mockConfidences) as LesionType[]).forEach((key) => {
+        normalizedConfidences[key] = (mockConfidences[key] || 0) / sum;
+      });
 
       // Find the highest confidence prediction
-      const entries = Object.entries(normalizedConfidences) as [LesionType, number][]
+      const entries = Object.entries(normalizedConfidences) as [LesionType, number][];
       const prediction = entries.reduce(
         (max, [key, value]) => (value > max[1] ? [key, value] : max),
         ["nv" as LesionType, 0],
-      )[0]
+      )[0];
 
       const mockResults: ResultType = {
         prediction,
         confidences: normalizedConfidences,
         details: ["Image quality: Good", "Lesion border: Well-defined", "Color variation: Moderate"],
-      }
+      };
 
-      setResults(mockResults)
+      setResults(mockResults);
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   const handleSampleImageSelect = (type: LesionType) => {
     setImage(sampleImages[type])

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
 DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
-REQUEST_TIMEOUT = 30  # seconds
+REQUEST_TIMEOUT = 60  # seconds (increased from 30)
 
 # Initialize FastAPI
 app = FastAPI()
@@ -33,6 +33,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add this after the app initialization but before any routes
+# Preload model at startup
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Preloading model at startup")
+    try:
+        get_model()
+        logger.info("Model preloaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to preload model: {e}")
+        logger.error(traceback.format_exc())
 
 # Model cache
 _model_cache = None
@@ -136,6 +148,20 @@ def get_model():
 
 # Image preprocessing
 def preprocess_image(image):
+    # Resize large images before processing to save memory and time
+    width, height = image.size
+    if width > 1000 or height > 1000:
+        # Calculate aspect ratio
+        aspect_ratio = width / height
+        if width > height:
+            new_width = 1000
+            new_height = int(new_width / aspect_ratio)
+        else:
+            new_height = 1000
+            new_width = int(new_height * aspect_ratio)
+        logger.info(f"Resizing large image from {width}x{height} to {new_width}x{new_height}")
+        image = image.resize((new_width, new_height), Image.LANCZOS)
+    
     transform = transforms.Compose([
         transforms.Resize((300, 300)),
         transforms.ToTensor(),
