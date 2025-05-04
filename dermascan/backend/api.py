@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
 DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
+CLASS_DESCRIPTIONS = {
+    'akiec': 'Actinic Keratosis',
+    'bcc': 'Basal Cell Carcinoma',
+    'bkl': 'Benign Keratosis',
+    'df': 'Dermatofibroma',
+    'mel': 'Melanoma',
+    'nv': 'Melanocytic Nevus',
+    'vasc': 'Vascular Lesion'
+}
 REQUEST_TIMEOUT = 25  # seconds (reduced to stay under Render's limit)
 MAX_IMAGE_SIZE = 1000  # Maximum dimension for images
 
@@ -150,15 +159,9 @@ def get_model():
         model.load_state_dict(model_state_dict)
         model.eval()
 
-        # Apply quantization to reduce memory usage
-        try:
-            model = torch.quantization.quantize_dynamic(
-                model, {torch.nn.Linear}, dtype=torch.qint8
-            )
-            logger.info("Model quantized successfully")
-        except Exception as e:
-            logger.warning(f"Model quantization failed: {e}")
-
+        # IMPORTANT: Disable quantization as it might be affecting accuracy
+        # We'll prioritize accuracy over memory usage for now
+        
         elapsed_time = time.time() - start_time
         logger.info(f"✅ Model loaded with {num_classes} classes in {elapsed_time:.2f} seconds.")
         _model_cache = (model, class_names)
@@ -262,25 +265,48 @@ async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...
         with torch.no_grad():
             outputs = model(input_tensor)
             probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+            
+        # Debug: Log raw probabilities to help diagnose the issue
+        logger.info(f"Raw probabilities: {probs}")
+        
+        # Get the predicted class index
+        predicted_idx = torch.argmax(probs).item()
+        logger.info(f"Predicted index: {predicted_idx}")
 
         # Map class indices to class names
-        if isinstance(class_names[0], str) and class_names[0] in DEFAULT_CLASSES:
-            # If class_names are the short codes, use them directly
+        if isinstance(class_names[0], str) and len(class_names) == len(DEFAULT_CLASSES):
+            # If class_names are strings and match the expected length, use them directly
             confidences = {class_names[i]: float(probs[i]) for i in range(len(class_names))}
-            prediction = class_names[torch.argmax(probs).item()]
+            prediction = class_names[predicted_idx]
+            logger.info(f"Direct prediction: {prediction}")
         else:
-            # If class_names are full names, map back to short codes for frontend
-            # Create a mapping from full names to short codes
-            name_to_code = {}
-            for i, full_name in enumerate(class_names):
-                name_to_code[full_name] = DEFAULT_CLASSES[i]
-                
-            confidences = {DEFAULT_CLASSES[i]: float(probs[i]) for i in range(len(DEFAULT_CLASSES))}
-            prediction_idx = torch.argmax(probs).item()
-            prediction = DEFAULT_CLASSES[prediction_idx]
+            # If class_names are full names or don't match expected format, 
+            # use a more robust mapping approach
             
-            logger.info(f"Mapped prediction from {class_names[prediction_idx]} to {prediction}")
+            # Create a mapping from indices to default class codes
+            confidences = {}
+            for i in range(len(probs)):
+                if i < len(DEFAULT_CLASSES):
+                    confidences[DEFAULT_CLASSES[i]] = float(probs[i])
+                    
+            # Get the prediction using the predicted index
+            if predicted_idx < len(DEFAULT_CLASSES):
+                prediction = DEFAULT_CLASSES[predicted_idx]
+            else:
+                # Fallback if index is out of range
+                prediction = DEFAULT_CLASSES[0]
+                
+            logger.info(f"Mapped prediction: {prediction}")
+            
+            # If class_names contains full descriptions, log them for reference
+            if isinstance(class_names[0], str) and class_names[0] not in DEFAULT_CLASSES:
+                logger.info(f"Original class name: {class_names[predicted_idx]}")
 
+        # Add a sanity check - if all confidences are very close, it might indicate a problem
+        confidence_values = list(confidences.values())
+        if max(confidence_values) - min(confidence_values) < 0.1:
+            logger.warning("Low confidence spread detected - model might not be discriminating well")
+            
         # Analyze image
         details = [
             f"Image quality: {analyze_image_quality(image)}",
@@ -325,20 +351,70 @@ async def health_check():
     try:
         start_time = time.time()
         model, _ = get_model()
-        dummy_input = torch.zeros((1, 3, 300, 300))
+        
+        # Create a test tensor with random data to verify model is working
+        dummy_input = torch.rand((1, 3, 300, 300))
+        
         with torch.no_grad():
-            _ = model(dummy_input)
+            outputs = model(dummy_input)
+            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+            
+        # Check if model is producing varied outputs
+        min_prob = float(torch.min(probs))
+        max_prob = float(torch.max(probs))
+        prob_range = max_prob - min_prob
+        
         elapsed_time = time.time() - start_time
         log_memory_usage()
+        
         return {
             "status": "healthy", 
             "model_loaded": True,
-            "response_time": f"{elapsed_time:.2f} seconds"
+            "response_time": f"{elapsed_time:.2f} seconds",
+            "model_check": {
+                "probability_range": prob_range,
+                "min_probability": min_prob,
+                "max_probability": max_prob
+            }
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         logger.error(traceback.format_exc())
         return {"status": "unhealthy", "error": str(e)}
+
+# Add a debug endpoint to test model with sample data
+@app.get("/debug/model-test")
+async def model_test():
+    try:
+        model, class_names = get_model()
+        
+        # Create a test tensor with random data
+        test_input = torch.rand((1, 3, 300, 300))
+        
+        with torch.no_grad():
+            outputs = model(test_input)
+            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+        
+        # Get predictions for each class
+        predictions = {}
+        for i, prob in enumerate(probs):
+            class_code = DEFAULT_CLASSES[i] if i < len(DEFAULT_CLASSES) else f"class_{i}"
+            class_name = class_names[i] if i < len(class_names) else f"Unknown Class {i}"
+            predictions[class_code] = {
+                "probability": float(prob),
+                "class_name": class_name
+            }
+        
+        return {
+            "status": "success",
+            "predictions": predictions,
+            "raw_probabilities": [float(p) for p in probs],
+            "class_names": class_names
+        }
+    except Exception as e:
+        logger.error(f"Model test failed: {e}")
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(e)}
 
 # Run with Uvicorn locally (optional)
 if __name__ == "__main__":
