@@ -9,6 +9,11 @@ from starlette.responses import JSONResponse
 from io import BytesIO
 import torch.nn as nn
 from torchvision import models
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
@@ -17,19 +22,28 @@ DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
 # Initialize FastAPI
 app = FastAPI()
 
-# Allow CORS for Vercel frontend
+# CORS configuration - IMPORTANT: This must be added before any routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app"],
+    allow_origins=["*"],  # Allow all origins temporarily for debugging
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# Model cache
+_model_cache = None
 
 @app.get("/")
 async def root():
+    logger.info("Root endpoint accessed")
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
+@app.get("/cors-test")
+async def cors_test():
+    logger.info("CORS test endpoint accessed")
+    return {"status": "ok", "message": "CORS is working properly if you can see this message in your frontend"}
 
 # Define EfficientNet model architecture
 class SkinLesionModel(nn.Module):
@@ -69,23 +83,31 @@ class DummyModel(nn.Module):
     def forward(self, x):
         return torch.zeros((1, len(DEFAULT_CLASSES)))
 
-# Load trained model
-def load_model():
+# Load trained model with caching
+def get_model():
+    global _model_cache
+    if _model_cache is not None:
+        return _model_cache
+    
     try:
         model_path = os.path.join(os.path.dirname(__file__), MODEL_PATH)
         if not os.path.exists(model_path):
-            print("❌ Trained model file not found. Using DummyModel.")
-            return DummyModel(), DEFAULT_CLASSES
+            logger.error(f"❌ Trained model file not found at {model_path}. Using DummyModel.")
+            _model_cache = (DummyModel(), DEFAULT_CLASSES)
+            return _model_cache
 
+        logger.info(f"Loading model from {model_path}")
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
         
         # Extract class names if available, otherwise use default
         if isinstance(checkpoint, dict) and 'class_names' in checkpoint:
             class_names = checkpoint['class_names']
             model_state_dict = checkpoint['model_state_dict']
+            logger.info(f"Found class names in checkpoint: {class_names}")
         else:
             class_names = DEFAULT_CLASSES
             model_state_dict = checkpoint
+            logger.info(f"Using default class names: {class_names}")
             
         num_classes = len(class_names)
 
@@ -96,12 +118,14 @@ def load_model():
         model.load_state_dict(model_state_dict)
         model.eval()
 
-        print(f"✅ Model loaded with {num_classes} classes.")
-        return model, class_names
+        logger.info(f"✅ Model loaded with {num_classes} classes.")
+        _model_cache = (model, class_names)
+        return _model_cache
 
     except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-        return DummyModel(), DEFAULT_CLASSES
+        logger.error(f"❌ Failed to load model: {e}")
+        _model_cache = (DummyModel(), DEFAULT_CLASSES)
+        return _model_cache
 
 # Image preprocessing
 def preprocess_image(image):
@@ -148,14 +172,17 @@ def analyze_color_variation(image):
 # Prediction endpoint
 @app.post("/api/predict")
 async def predict(file: UploadFile = File(...)):
+    logger.info(f"Received prediction request for file: {file.filename}")
     try:
         contents = await file.read()
         try:
             image = Image.open(BytesIO(contents)).convert('RGB')
+            logger.info(f"Image opened successfully, size: {image.size}")
         except UnidentifiedImageError:
+            logger.error("Invalid image file")
             raise HTTPException(status_code=400, detail="Invalid image file.")
 
-        model, class_names = load_model()
+        model, class_names = get_model()
         input_tensor = preprocess_image(image)
 
         with torch.no_grad():
@@ -178,20 +205,38 @@ async def predict(file: UploadFile = File(...)):
             f"Color variation: {analyze_color_variation(image)}"
         ]
 
-        return JSONResponse(content={
+        response_data = {
             "prediction": prediction,
             "confidences": confidences,
             "details": details
-        })
+        }
+        
+        logger.info(f"Prediction successful: {prediction}")
+        return JSONResponse(content=response_data)
 
     except HTTPException as http_err:
+        logger.error(f"HTTP error: {http_err}")
         raise http_err
     except Exception as e:
-        print(f"❌ Prediction error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"❌ Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    try:
+        model, _ = get_model()
+        dummy_input = torch.zeros((1, 3, 300, 300))
+        with torch.no_grad():
+            _ = model(dummy_input)
+        return {"status": "healthy", "model_loaded": True}
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {"status": "unhealthy", "error": str(e)}
 
 # Run with Uvicorn locally (optional)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8502))  # Use the port Render detected
     import uvicorn
+    logger.info(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
