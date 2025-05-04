@@ -30,7 +30,16 @@ app.add_middleware(
 async def root():
     return {"status": "ok", "message": "DermaScan API is running. Use /api/predict endpoint for predictions."}
 
-# Load model
+# Dummy model used if loading fails
+class DummyModel:
+    def __init__(self):
+        print("⚠️ Using dummy model.")
+
+    def __call__(self, x):
+        return torch.softmax(torch.randn(1, len(CLASS_NAMES)), dim=1)
+
+
+# Load model from saved checkpoint
 def load_model():
     try:
         model = models.efficientnet_b3(pretrained=False)
@@ -40,24 +49,20 @@ def load_model():
         model_path = os.path.join(os.path.dirname(__file__), 'skin_lesion_model.pth')
 
         if os.path.exists(model_path):
-            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-            print("Loaded trained model")
+            checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
+
+            # Load only the model state dict
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print("✅ Trained model loaded successfully.")
         else:
-            print("No trained model found. Using random classifier weights.")
+            print("❌ No trained model found. Using random classifier weights.")
 
         model.eval()
         return model
 
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"❌ Error loading model: {e}")
         return DummyModel()
-
-class DummyModel:
-    def __init__(self):
-        print("Using dummy model.")
-
-    def __call__(self, x):
-        return torch.softmax(torch.randn(1, len(CLASS_NAMES)), dim=1)
 
 # Preprocess image
 def preprocess_image(image):
