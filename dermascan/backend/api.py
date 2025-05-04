@@ -1,7 +1,7 @@
 import torch
 import torchvision.transforms as transforms
 import torchvision.models as models
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import os
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -19,7 +19,7 @@ app = FastAPI()
 # Add CORS middleware to allow requests from the frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://derma-scan-kappa.vercel.app/"],  # Allow all origins for development
+    allow_origins=["https://derma-scan-kappa.vercel.app"],  # Only allow your frontend domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,7 +37,6 @@ class DummyModel:
 
     def __call__(self, x):
         return torch.softmax(torch.randn(1, len(CLASS_NAMES)), dim=1)
-
 
 # Load model from saved checkpoint
 def load_model():
@@ -75,17 +74,14 @@ def preprocess_image(image):
 
 # Analyze image quality
 def analyze_image_quality(image):
-    # Calculate basic image quality metrics
     width, height = image.size
-    
-    # Check if image is too small
+
     if width < 100 or height < 100:
         return "Poor - Image is too small"
-    
-    # Check if image is blurry (using a simple variance of Laplacian)
+
     img_array = np.array(image.convert('L'))
     variance = np.var(img_array)
-    
+
     if variance < 100:
         return "Poor - Image may be blurry"
     elif variance < 500:
@@ -95,13 +91,9 @@ def analyze_image_quality(image):
 
 # Analyze lesion border
 def analyze_lesion_border(image):
-    # This would normally use edge detection algorithms
-    # For now, we'll return a placeholder based on image characteristics
     img_array = np.array(image)
-    
-    # Simple edge detection using standard deviation of pixel values
     edge_strength = np.std(img_array)
-    
+
     if edge_strength < 30:
         return "Poorly-defined"
     elif edge_strength < 60:
@@ -111,17 +103,15 @@ def analyze_lesion_border(image):
 
 # Analyze color variation
 def analyze_color_variation(image):
-    # Convert to RGB if not already
     img_rgb = image.convert('RGB')
     img_array = np.array(img_rgb)
-    
-    # Calculate standard deviation across color channels
-    r_std = np.std(img_array[:,:,0])
-    g_std = np.std(img_array[:,:,1])
-    b_std = np.std(img_array[:,:,2])
-    
+
+    r_std = np.std(img_array[:, :, 0])
+    g_std = np.std(img_array[:, :, 1])
+    b_std = np.std(img_array[:, :, 2])
+
     avg_std = (r_std + g_std + b_std) / 3
-    
+
     if avg_std < 20:
         return "Minimal"
     elif avg_std < 40:
@@ -134,10 +124,12 @@ def analyze_color_variation(image):
 async def predict(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        image = Image.open(BytesIO(contents)).convert('RGB')
+        try:
+            image = Image.open(BytesIO(contents)).convert('RGB')
+        except UnidentifiedImageError:
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.")
 
         model = load_model()
-
         processed_image = preprocess_image(image)
 
         with torch.no_grad():
@@ -146,12 +138,12 @@ async def predict(file: UploadFile = File(...)):
 
         confidences = {CLASS_NAMES[i]: float(probabilities[i]) for i in range(len(CLASS_NAMES))}
         prediction = CLASS_NAMES[torch.argmax(probabilities).item()]
-        
+
         # Generate analysis details
         image_quality = analyze_image_quality(image)
         border_quality = analyze_lesion_border(image)
         color_variation = analyze_color_variation(image)
-        
+
         details = [
             f"Image quality: {image_quality}",
             f"Lesion border: {border_quality}",
@@ -164,9 +156,11 @@ async def predict(file: UploadFile = File(...)):
             "details": details
         })
 
+    except HTTPException as http_err:
+        raise http_err
     except Exception as e:
         print(f"Error during prediction: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # Run the FastAPI app with uvicorn
 if __name__ == "__main__":
