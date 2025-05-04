@@ -16,7 +16,6 @@ venv/
 
 # Model and data
 model/data/
-*.pth
 *.h5
 *.onnx
 *.pb
