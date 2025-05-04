@@ -3,7 +3,7 @@ import torchvision.transforms as transforms
 from PIL import Image, UnidentifiedImageError
 import os
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from io import BytesIO
@@ -12,6 +12,8 @@ from torchvision import models
 import logging
 import time
 import traceback
+import gc  # Garbage collector
+import psutil  # For memory monitoring
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -20,34 +22,49 @@ logger = logging.getLogger(__name__)
 # Constants
 MODEL_PATH = "skin_lesion_model.pth"
 DEFAULT_CLASSES = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']
-REQUEST_TIMEOUT = 60  # seconds (increased from 30)
+REQUEST_TIMEOUT = 25  # seconds (reduced to stay under Render's limit)
+MAX_IMAGE_SIZE = 1000  # Maximum dimension for images
 
 # Initialize FastAPI
 app = FastAPI()
 
-# CORS configuration - IMPORTANT: This must be added before any routes
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_credentials=False,  # Important: must be False when allow_origins=["*"]
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Add this after the app initialization but before any routes
+# Model cache
+_model_cache = None
+
+# Memory monitoring
+def log_memory_usage():
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    logger.info(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+
+# Garbage collection helper
+def collect_garbage():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    log_memory_usage()
+
 # Preload model at startup
 @app.on_event("startup")
 async def startup_event():
     logger.info("Preloading model at startup")
     try:
+        log_memory_usage()
         get_model()
         logger.info("Model preloaded successfully")
+        log_memory_usage()
     except Exception as e:
         logger.error(f"Failed to preload model: {e}")
         logger.error(traceback.format_exc())
-
-# Model cache
-_model_cache = None
 
 @app.get("/")
 async def root():
@@ -56,7 +73,6 @@ async def root():
 
 @app.options("/api/predict")
 async def options_predict():
-    # Handle preflight requests
     return JSONResponse(content={"status": "ok"})
 
 # Define EfficientNet model architecture
@@ -65,7 +81,7 @@ class SkinLesionModel(nn.Module):
         super(SkinLesionModel, self).__init__()
         
         # Load EfficientNet-B3 (without pretrained weights)
-        self.efficientnet = models.efficientnet_b3(weights=None)  # Updated from pretrained=False
+        self.efficientnet = models.efficientnet_b3(weights=None)
         
         # Get the number of features in the last layer
         in_features = self.efficientnet.classifier[1].in_features
@@ -88,7 +104,6 @@ class SkinLesionModel(nn.Module):
     def forward(self, x):
         features = self.efficientnet(x)
         return self.classifier(features)
-
 
 # Fallback dummy model
 class DummyModel(nn.Module):
@@ -135,6 +150,15 @@ def get_model():
         model.load_state_dict(model_state_dict)
         model.eval()
 
+        # Apply quantization to reduce memory usage
+        try:
+            model = torch.quantization.quantize_dynamic(
+                model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+            logger.info("Model quantized successfully")
+        except Exception as e:
+            logger.warning(f"Model quantization failed: {e}")
+
         elapsed_time = time.time() - start_time
         logger.info(f"✅ Model loaded with {num_classes} classes in {elapsed_time:.2f} seconds.")
         _model_cache = (model, class_names)
@@ -150,14 +174,14 @@ def get_model():
 def preprocess_image(image):
     # Resize large images before processing to save memory and time
     width, height = image.size
-    if width > 1000 or height > 1000:
+    if width > MAX_IMAGE_SIZE or height > MAX_IMAGE_SIZE:
         # Calculate aspect ratio
         aspect_ratio = width / height
         if width > height:
-            new_width = 1000
+            new_width = MAX_IMAGE_SIZE
             new_height = int(new_width / aspect_ratio)
         else:
-            new_height = 1000
+            new_height = MAX_IMAGE_SIZE
             new_width = int(new_height * aspect_ratio)
         logger.info(f"Resizing large image from {width}x{height} to {new_width}x{new_height}")
         image = image.resize((new_width, new_height), Image.LANCZOS)
@@ -204,9 +228,10 @@ def analyze_color_variation(image):
 
 # Prediction endpoint
 @app.post("/api/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     start_time = time.time()
     logger.info(f"Received prediction request for file: {file.filename}")
+    log_memory_usage()
     
     try:
         # Set a timeout for the entire request processing
@@ -273,6 +298,9 @@ async def predict(file: UploadFile = File(...)):
         elapsed_time = time.time() - start_time
         logger.info(f"Prediction successful: {prediction} in {elapsed_time:.2f} seconds")
         
+        # Schedule garbage collection after response is sent
+        background_tasks.add_task(collect_garbage)
+        
         # Return response with CORS headers
         return JSONResponse(
             content=response_data,
@@ -301,6 +329,7 @@ async def health_check():
         with torch.no_grad():
             _ = model(dummy_input)
         elapsed_time = time.time() - start_time
+        log_memory_usage()
         return {
             "status": "healthy", 
             "model_loaded": True,
@@ -313,7 +342,7 @@ async def health_check():
 
 # Run with Uvicorn locally (optional)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8502))  # Use the port Render detected
+    port = int(os.environ.get("PORT", 8502))
     import uvicorn
     logger.info(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
