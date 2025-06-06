@@ -41,7 +41,7 @@ export default function AnimatedCell() {
     >
       <div className="relative w-full h-full">
         <Image
-          src="/placeholder.svg?height=500&width=500"
+          src="/bg1.png"
           alt="Skin cell visualization"
           width={500}
           height={500}
